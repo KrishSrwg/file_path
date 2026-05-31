@@ -90,11 +90,35 @@ def _is_na(val) -> bool:
 # Voting logic
 # ---------------------------------------------------------------------------
 
+def _normalise_value(v: str) -> str:
+    """Normalise a string value before voting.
+
+    Handles the pandas float-conversion artefact: when a CSV column contains
+    both integer step counts ('1', '2') and 'NA' strings, pandas reads the
+    column with float64 dtype, turning '2' into 2.0.  str(2.0) = '2.0'.
+    If that '2.0' were written to the consensus CSV and compared against the
+    reference '2', it would be scored as wrong.  This strips the trailing '.0'
+    so '2.0' → '2' before tallying votes.
+
+    Also normalises capitalisation for Yes/No/NA so case differences across
+    runs don't create spurious distinct vote buckets.
+    """
+    v = v.strip()
+    # Strip integer float artefact: '1.0' → '1', '2.0' → '2', '12.0' → '12'
+    try:
+        f = float(v)
+        if f == int(f):
+            v = str(int(f))
+    except ValueError:
+        pass
+    return v
+
+
 def vote_categorical(values: list, min_votes: int = 1):
     """Majority vote for categorical/numeric fields.
 
     Rules:
-    1. Collect non-NA values and count them.
+    1. Collect non-NA values, normalising pandas float artefacts ('2.0' → '2').
     2. If the most common non-NA value has >= min_votes AND more votes than NA:
        return it.
     3. Otherwise return None (becomes NaN in DataFrame → blank in CSV).
@@ -103,7 +127,7 @@ def vote_categorical(values: list, min_votes: int = 1):
     returned NA. Default of 1 means any single non-NA value wins over all-NA.
     Set to 2 or 3 for stricter consensus.
     """
-    non_na = [str(v).strip() for v in values if not _is_na(v)]
+    non_na = [_normalise_value(str(v)) for v in values if not _is_na(v)]
     na_count = len(values) - len(non_na)
 
     if not non_na:
@@ -201,7 +225,10 @@ def build_consensus(
                 )
                 result.at[idx, req_col] = "Yes"
 
-    # Reorder columns to match the submission tab layout
+    # Reorder columns to match the submission tab layout.
+    # "Access Score" is included here but will be populated by run_multi.py
+    # (averaged across all runs) after this function returns — so it is left
+    # absent at this point and added as NA if not already present.
     ordered_cols = [
         "Filename", "Brand", "Age",
         "Step Therapy Requirements Documented in Policy",
@@ -215,7 +242,12 @@ def build_consensus(
         "Reauthorization Duration(in-months)",
         "Reauthorization Required",
         "Reauthorization Requirements Documented in Policy",
+        "Access Score",
     ]
+    # Add placeholder "Access Score" column of NAs so the column slot exists
+    # in the output file; run_multi.py will overwrite with the numeric average.
+    if "Access Score" not in result.columns:
+        result["Access Score"] = "NA"
     return result[[c for c in ordered_cols if c in result.columns]]
 
 
