@@ -16,7 +16,7 @@ reauthorization requirements from insurance policy documents.
 Extract the reauthorization (renewal) requirements for {brand} from the PA policy
 document below. Focus on plaque psoriasis (PsO) only.
 
-Return ONLY a JSON object with exactly 2 keys. No explanation, no preamble,
+Return ONLY a JSON object with exactly 3 keys. No explanation, no preamble,
 no markdown formatting.
 </task>
 
@@ -104,6 +104,90 @@ applying to all drugs in the policy class.
     - If any renewal, continuation, or re-evaluation section exists: use "Yes"
   </rule>
 
+  <rule id="5" name="pso_specific_extraction_critical">
+    CRITICAL — PsO SECTION ONLY: When a policy has indication-specific reauth sections
+    (e.g., separate criteria for Crohn's Disease, Rheumatoid Arthritis, Psoriatic
+    Arthritis, and Plaque Psoriasis), you MUST extract reauth requirements ONLY from
+    the Plaque Psoriasis (PsO) section.
+
+    Do NOT use reauth text from:
+    - Crohn's Disease (CD) sections
+    - Ulcerative Colitis (UC) sections
+    - Rheumatoid Arthritis (RA) sections
+    - Psoriatic Arthritis (PsA) sections
+    - Polymyalgia Rheumatica (PMR) sections
+    - Any other non-PsO indication
+
+    If the document has a multi-indication continued therapy section where PsO falls
+    under "all other indications" or "for all other indications: Member is responding
+    positively to therapy", extract THAT general criterion as the PsO reauth text.
+    Do NOT invent a PsO-specific criterion that is not in the document.
+  </rule>
+
+  <rule id="6" name="step_therapy_is_not_reauth">
+    CRITICAL — STEP THERAPY ≠ REAUTH: Step-therapy requirements (trial and failure of
+    preferred agents, claims history verification, or prior biologic use requirements)
+    are INITIAL AUTHORIZATION criteria, not reauthorization criteria.
+
+    Examples of initial-only step therapy language (do NOT treat as reauth):
+    - "Patient must have tried and failed Humira and Enbrel"
+    - "Patient has tried TWO of [preferred products]"
+    - "Approval requires claims history showing 90 days of prior product use"
+    - "Verification in prescription claims history required"
+    - "Verification by prescriber required"
+
+    If a policy ONLY has step-therapy language with NO dedicated continuation/renewal/
+    reauthorization section, return reauth_required = "NA" and
+    reauth_requirements_text = "NA".
+
+    A policy that lists only step therapy for initial approval has NOT established a
+    reauthorization requirement.
+  </rule>
+
+  <rule id="7" name="preferred_vs_nonpreferred_reauth">
+    Some policies apply different reauthorization requirements to Preferred vs.
+    Non-Preferred drugs. Before extracting reauth text, determine whether {brand}
+    is listed as a Preferred product or a Non-Preferred product in this policy.
+
+    - If {brand} is PREFERRED: extract the continuation requirements that apply to
+      preferred products. Do NOT apply Non-Preferred continuation requirements
+      (e.g., "claims history verification" for Non-Preferred products) to a Preferred drug.
+    - If {brand} is NON-PREFERRED: extract the requirements applicable to non-preferred
+      products.
+    - If the policy does not distinguish between tiers: extract the general reauth
+      requirements that apply to all drugs.
+  </rule>
+
+  <rule id="8" name="anti_fabrication_exact_text">
+    CRITICAL — EXTRACT EXACT TEXT: Do not create, invent, or paraphrase indication-
+    specific labels or criteria that do not appear verbatim in the document.
+
+    Forbidden fabrication examples:
+    - If the document says "d. For PMR: criteria..." and "e. For all other indications:
+      Member is responding positively to therapy", do NOT write "d. For PsO: criteria..."
+      PsO falls under "e. For all other indications" — capture that text.
+    - If PsO has no dedicated criterion, do NOT create one. Write the general criterion
+      that covers PsO.
+
+    Always extract the text as it appears in the document, including the exact
+    indication labels used.
+  </rule>
+
+  <rule id="9" name="drug_coverage_verification">
+    CRITICAL — VERIFY DRUG COVERAGE FIRST: Before extracting any reauth values, verify
+    that {brand} ({generics_list}) is explicitly covered for plaque psoriasis (PsO) in
+    this document.
+
+    If the document covers ONLY cancer drugs (e.g., Multiple Myeloma medications),
+    cardiovascular drugs, or other non-inflammatory conditions, and {brand} does NOT
+    appear in the policy's coverage criteria for PsO:
+    - Return reauth_required = "NA"
+    - Return reauth_requirements_text = "NA"
+
+    A drug appearing only in a reference list, bibliography, or background section
+    does NOT count as being covered under this policy.
+  </rule>
+
 </business_rules>
 
 <examples>
@@ -121,7 +205,8 @@ applying to all drugs in the policy class.
     <output>
       {
         "reauth_required": "Yes",
-        "reauth_requirements_text": "Authorization of 12 months may be granted for members who achieve or maintain a positive clinical response as evidenced by low disease activity or improvement in signs and symptoms when either of the following is met: (1) Reduction in body surface area (BSA) affected from baseline; OR (2) Improvement in signs and symptoms from baseline (e.g., itching, redness, flaking, scaling)."
+        "reauth_requirements_text": "Authorization of 12 months may be granted for members who achieve or maintain a positive clinical response as evidenced by low disease activity or improvement in signs and symptoms when either of the following is met: (1) Reduction in body surface area (BSA) affected from baseline; OR (2) Improvement in signs and symptoms from baseline (e.g., itching, redness, flaking, scaling).",
+        "_reasoning": "Found Reauthorization Criteria (Plaque Psoriasis) section with explicit BSA/symptom response requirements."
       }
     </output>
   </example>
@@ -138,12 +223,13 @@ applying to all drugs in the policy class.
     <output>
       {
         "reauth_required": "Yes",
-        "reauth_requirements_text": "NA"
+        "reauth_requirements_text": "NA",
+        "_reasoning": "Reauthorization Approval duration of 12 months stated; no specific criteria text present."
       }
     </output>
   </example>
 
-  <example id="3" description="Reference Tab example">
+  <example id="3" description="Continuation of Therapy section">
     <policy_excerpt>
       Continuation of Therapy: Documentation of positive clinical response to therapy
       as evidenced by ONE of the following: reduction in body surface area (BSA)
@@ -153,7 +239,8 @@ applying to all drugs in the policy class.
     <output>
       {
         "reauth_required": "Yes",
-        "reauth_requirements_text": "Documentation of positive clinical response to therapy as evidenced by ONE of the following: reduction in body surface area (BSA) involvement from baseline OR improvement in symptoms (e.g., pruritus, inflammation) from baseline."
+        "reauth_requirements_text": "Documentation of positive clinical response to therapy as evidenced by ONE of the following: reduction in body surface area (BSA) involvement from baseline OR improvement in symptoms (e.g., pruritus, inflammation) from baseline.",
+        "_reasoning": "Found Continuation of Therapy section with BSA/symptom response requirements."
       }
     </output>
   </example>
@@ -166,7 +253,106 @@ applying to all drugs in the policy class.
     <output>
       {
         "reauth_required": "NA",
-        "reauth_requirements_text": "NA"
+        "reauth_requirements_text": "NA",
+        "_reasoning": "No reauthorization, renewal, or continuation section found in the document."
+      }
+    </output>
+  </example>
+
+  <example id="5" description="Multi-indication policy — PsO falls under general criterion, not its own entry">
+    <policy_excerpt>
+      II. Continued Therapy — E. All Other Indications:
+      Member meets one of the following (a, b, c, d, or e):
+        a. For RA: [RA-specific criteria]
+        b. For HS: At least a 25% reduction in inflammatory nodules and abscesses;
+        c. For AD: Member is responding positively to therapy as evidenced by reduction
+           in itching and scratching;
+        d. For PMR: Member is responding positively to therapy as evidenced by decrease
+           in signs and symptoms and reduction in CRP/ESR;
+        e. For all other indications: Member is responding positively to therapy;
+      Approval duration: For all other indications - 12 months
+    </policy_excerpt>
+    <reasoning>
+      PsO is NOT RA, HS, AD, or PMR. PsO falls under "e. For all other indications."
+      Do NOT fabricate "d. For PsO" — it does not exist. Extract criterion "e."
+    </reasoning>
+    <output>
+      {
+        "reauth_required": "Yes",
+        "reauth_requirements_text": "For all other indications: Member is responding positively to therapy.",
+        "_reasoning": "PsO has no dedicated criterion in Continued Therapy Section II.E; falls under 'e. For all other indications: Member is responding positively to therapy.'"
+      }
+    </output>
+  </example>
+
+  <example id="6" description="Step-therapy-only policy — no reauth section">
+    <policy_excerpt>
+      Coverage Criteria:
+      1. Patient has a diagnosis of moderate-to-severe plaque psoriasis.
+      2. Patient has tried and failed methotrexate or cyclosporine OR has a
+         contraindication to both.
+      3. Patient has tried and failed at least ONE preferred biologic (Humira or Enbrel).
+      [No Continuation of Therapy, Renewal, or Reauthorization section present.]
+    </policy_excerpt>
+    <reasoning>
+      Only step-therapy criteria are present. Step-therapy = initial criteria, not reauth.
+      No continuation/renewal/reauth section exists → all NA.
+    </reasoning>
+    <output>
+      {
+        "reauth_required": "NA",
+        "reauth_requirements_text": "NA",
+        "_reasoning": "Policy contains only step-therapy initial criteria. No continuation, renewal, or reauthorization section present."
+      }
+    </output>
+  </example>
+
+  <example id="7" description="Wrong document — cancer drug policy, brand not covered">
+    <policy_excerpt>
+      Medications for Multiple Myeloma Policy.
+      Covered medications: Kyprolis (carfilzomib), Darzalex (daratumumab),
+      Ninlaro (ixazomib), Pomalyst (pomalidomide).
+      D. Authorization may be reviewed at least annually. For any ongoing authorization,
+      clinical documentation must confirm current medical necessity criteria are met
+      and the medication is providing clinical benefit.
+    </policy_excerpt>
+    <reasoning>
+      This is a cancer drug policy. The queried brand (e.g., Stelara/ustekinumab)
+      is NOT listed for plaque psoriasis in this document. Do NOT extract the annual
+      review language as applying to the queried brand. Return all NA.
+    </reasoning>
+    <output>
+      {
+        "reauth_required": "NA",
+        "reauth_requirements_text": "NA",
+        "_reasoning": "Document covers only cancer medications (Multiple Myeloma); the queried brand is not covered for plaque psoriasis in this policy."
+      }
+    </output>
+  </example>
+
+  <example id="8" description="Non-Preferred continuation criteria — queried brand is Preferred">
+    <policy_excerpt>
+      Policy: Inflammatory Conditions Preferred Specialty Management
+      Step 1 Preferred (Psoriasis): Enbrel, Humira, Otezla, Skyrizi, Stelara, Taltz, Tremfya
+      Step 2 Non-Preferred: Cimzia, Ilumya, Siliq
+      Continuation of Therapy: Approval for a patient continuing therapy with a
+      Non-Preferred subcutaneous or oral Product must be supported with verification
+      in prescription claims history required OR verification by prescriber required.
+      Approval Duration: All approvals for continuation of therapy for Preferred and
+      Non-Preferred Products are provided for 1 year.
+    </policy_excerpt>
+    <reasoning>
+      Queried brand = STELARA (Step 1 Preferred). The "claims history verification"
+      requirement applies ONLY to Non-Preferred products. Stelara is Preferred.
+      The reauth requirement for Stelara is found in the standard PA criteria
+      (referenced separately) — not stated explicitly in this step-therapy document.
+      The duration (1 year) IS stated universally.
+    </reasoning>
+    <output>
+      {
+        "reauth_required": "Yes",
+        "reauth_requirements_text": "NA",
+        "_reasoning": "Stelara is a Step 1 Preferred product. The claims history verification requirement applies only to Non-Preferred products and must not be attributed to Stelara. Reauth duration of 1 year applies universally but specific Preferred-product criteria are not stated in this step-therapy document."
       }
     </output>
   </example>
