@@ -183,7 +183,19 @@ def process_row(filename: str, brand: str, model: str = DEFAULT_MODEL) -> dict[s
         pdf_path = PDF_DIR / filename
         pages = extract_text(pdf_path, use_cache=True)
         raw = extract_fields(pages, brand)
-        return normalize_record(raw, brand=brand)
+        normalized = normalize_record(raw, brand=brand)
+
+        # Audit: warn when duration or reauth fields are all-NA — useful for
+        # diagnosing missed APPROVAL LENGTH / combined-section extractions.
+        dur_fields = ["initial_auth_duration", "reauth_duration",
+                      "reauth_required", "reauth_requirements_text"]
+        if all(normalized.get(f, "NA") == "NA" for f in dur_fields):
+            logger.warning(
+                "All duration/reauth fields are NA for %s | %s — "
+                "check APPROVAL LENGTH / Quantity Limits and duration sections",
+                filename, brand,
+            )
+        return normalized
     except Exception as exc:
         logger.error(
             "Failed processing %s | %s — %s: %s",
