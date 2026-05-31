@@ -40,16 +40,38 @@ If a multi-drug quantity limit table is present, find the row for {brand}.
     or per-period amounts.
 
     VALID labels that trigger extraction:
-    - "Quantity Level Limit:"         → CAPTURE (Aetna format — note the word "Level")
-    - "## Quantity Limits"            → CAPTURE (Wellmark BCBS / WHA section header)
-    - "Quantity Limit: ..."           → CAPTURE
-    - "QL Amount: 2 vials per 28 days" → CAPTURE (QL = quantity limit)
+    - "Quantity Level Limit:"                       → CAPTURE (Aetna format)
+    - "## Quantity Limits"                          → CAPTURE (Wellmark BCBS section header)
+    - "Quantity Limit: ..."                         → CAPTURE
+    - "Quantity Limits and duration:"               → CAPTURE (see Rule 6 for parsing)
+    - "Dosage Form and Quantity Limit" (table col)  → CAPTURE (WA Apple Health table)
+    - "QL Amount: 2 vials per 28 days"              → CAPTURE (QL = quantity limit)
     - "Medical Specialty Medication Quantity Limits" table → CAPTURE if {brand} is in it
+    - Numbered item within PA criteria: e.g., "3. Quantity limit: ..." or "6. Quantity limit: ..."
+      → CAPTURE (any numbered criterion that uses the words "Quantity limit")
 
-    Do NOT extract from these sections even if they contain quantities:
-    - "Dosing: 45mg subcutaneous every 12 weeks" → DO NOT CAPTURE (dosing information)
-    - "Dosing Limits: ..." → DO NOT CAPTURE (explicitly a dosing section)
+    NESTED STRUCTURE — "## Quantity Limits" inside "Dosage and Administration":
+    Some policies place a "## Quantity Limits" subsection inside a broader
+    "Dosage and Administration" section. The parent section is NOT a dosing section
+    in this case — the QL subsection label takes precedence. A line such as
+    "Approvals may be subject to dosing limits in accordance with FDA-approved
+    labeling" is a general disclaimer; the actual QL table follows it. Continue
+    reading past this disclaimer and extract the QL table that follows.
+
+    MANDATORY LABEL TEST — DO NOT EXTRACT from these sections regardless of content:
+    - "Dosing regimen: [any dosing content]" → DO NOT CAPTURE
+    - "Dosage regimen: ..." → DO NOT CAPTURE
+    - "Approved Dosing: ..." → DO NOT CAPTURE
+    - "Dosing: [any dosing schedule]" → DO NOT CAPTURE
+    - "Dosing Limits: ..." → DO NOT CAPTURE
+    - "FDA Approved Dosages: ..." → DO NOT CAPTURE
+    - "Dose Rounding Guidelines" / "Quantity Recommendation" → DO NOT CAPTURE
     - FDA-approved dosing schedules in an Appendix or Dosing section
+
+    The SECTION LABEL test is non-negotiable. Even when a dosing section contains
+    specific amounts, frequencies, or per-period quantities, if the section header
+    says "Dosing regimen," "Dosage regimen," "Approved Dosing," or similar —
+    return "NA." The label overrides the content.
 
     SPECIAL CASE — "Reference Formulary":
     "Quantity Level Limit: Reference Formulary for drug specific quantity level limits"
@@ -106,10 +128,12 @@ If a multi-drug quantity limit table is present, find the row for {brand}.
   Only explicit indication labels are grounds for exclusion.
   </rule>
 
-  <rule id="6" name="quantity_limits_and_duration_combined_section">
-  Some policies use a combined section labeled "Quantity Limits and duration:"
+  <rule id="6" name="quantity_limits_and_duration_combined_section" priority="CRITICAL">
+  CRITICAL: Some policies use a combined section labeled "Quantity Limits and duration:"
   or "Quantity Limits and Duration:" that mixes approval duration data with
-  actual quantity limit values. Parse it as follows:
+  actual quantity limit values. Do NOT return "NA" for this section — it
+  explicitly uses the words "Quantity Limits" and contains real per-indication
+  quantity limit sub-bullets. Parse it as follows:
 
   IGNORE lines that specify approval periods — these are authorization
   duration, not quantity limits:
@@ -130,6 +154,30 @@ If a multi-drug quantity limit table is present, find the row for {brand}.
   quantity limit data, not the approval period.
   </rule>
 
+  <rule id="7" name="extract_all_entries_in_ql_section">
+  When a QL section (any valid label from Rule 1) contains multiple formulations
+  or entries for {brand}, extract ALL of them that pass the indication-scope
+  filter (Rule 5). Do NOT stop at the first matching entry.
+
+  After extracting the first valid entry, continue scanning the remainder of
+  the QL section for additional formulations, strengths, or patient sub-groups.
+  Include every entry that has no explicit indication-exclusion label.
+
+  Common multi-entry patterns to scan fully:
+  - Multiple strengths: 45mg/0.5mL AND 90mg/mL AND 130mg/26mL vial
+  - Multiple patient groups: adults ≤100kg, adults >100kg, pediatric sub-groups
+  - Multiple formulations: 100mg/mL prefilled syringe AND 200mg/2mL prefilled pen
+  - Initial PA + Renewal tiers for each formulation
+
+  CORRECT (all unlabeled entries captured):
+    "100mg/mL: 1 per 56 days; 200mg/2mL syringe/pen: 1 per 28 days"
+    [CD induction pack excluded because it carries explicit CD label]
+
+  INCORRECT (only first entry captured — do not do this):
+    "100mg/mL: 1 per 56 days"
+    [200mg/2mL entry was skipped even though it has no exclusion label]
+  </rule>
+
 </business_rules>
 
 <examples>
@@ -144,14 +192,20 @@ If a multi-drug quantity limit table is present, find the row for {brand}.
     <output>{"quantity_limits": "Stelara (ustekinumab) 45mg/0.5mL: 1 vial/syringe per 84 days; Exception limit: 2 vials/syringes per 28 days"}</output>
   </example>
 
-  <example id="2" description="Reference Tab example with IV and SC limits">
+  <example id="2" description="Quantity Level Limit with multiple strengths — capture all">
     <policy_excerpt>
       Quantity Level Limit:
       - Stelara (ustekinumab) 130 mg/26 mL single-dose vial: 4 vials (1 dose)
       - Stelara (ustekinumab) subcutaneous injection 45 mg/0.5 mL: 1 vial/syringe
         per 84 days; Exception limit: 2 vials/syringes per 28 days
+      - Stelara (ustekinumab) subcutaneous injection 90 mg/mL: 1 syringe per 56 days;
+        Exception limit: 2 syringes per 28 days
     </policy_excerpt>
-    <output>{"quantity_limits": "Quantity Level Limit: Stelara (ustekinumab) 130 mg/26 mL single-dose vial: 4 vials (1 dose); Stelara (ustekinumab) subcutaneous injection 45 mg/0.5 mL: 1 vial/syringe per 84 days; Exception limit: 2 vials/syringes per 28 days"}</output>
+    <reasoning>
+      All three entries have no explicit indication-exclusion label. Per Rule 7,
+      scan the entire QL section and capture all three entries.
+    </reasoning>
+    <output>{"quantity_limits": "Stelara (ustekinumab) 130 mg/26 mL single-dose vial: 4 vials (1 dose); Stelara (ustekinumab) subcutaneous injection 45 mg/0.5 mL: 1 vial/syringe per 84 days; Exception limit: 2 vials/syringes per 28 days; Stelara (ustekinumab) subcutaneous injection 90 mg/mL: 1 syringe per 56 days; Exception limit: 2 syringes per 28 days"}</output>
   </example>
 
   <example id="3" description="Only dosing information, no quantity limit label — NA">
@@ -172,6 +226,89 @@ If a multi-drug quantity limit table is present, find the row for {brand}.
       section for this drug]
     </policy_excerpt>
     <output>{"quantity_limits": "NA"}</output>
+  </example>
+
+  <example id="5" description="Multi-formulation QL section — capture all unlabeled, exclude CD-labeled">
+    <policy_excerpt>
+      Quantity Level Limit:
+      - Tremfya (guselkumab) 100 mg/mL prefilled syringe/One-press injector:
+          1 syringe/injector per 56 days
+          Exception limit: 2 syringes/injectors per 28 days
+      - Tremfya (guselkumab) 200 mg/2 mL prefilled syringe/pen:
+          1 syringe/pen per 28 days
+          Exception limit: 6 syringes/pens per 56 days
+      - Tremfya (guselkumab) 200 mg/2 mL prefilled pen Induction Pack for Crohn's Disease:
+          Exception limit: 3 cartons (6 pens) per 56 days
+    </policy_excerpt>
+    <reasoning>
+      Three entries found. Apply Rule 7 (scan all) and Rule 5 (indication filter):
+      - 100mg/mL: no indication label → INCLUDE
+      - 200mg/2mL syringe/pen: no indication label → INCLUDE
+      - 200mg/2mL Induction Pack "for Crohn's Disease": explicit CD label → EXCLUDE
+      Both unlabeled entries must appear in output.
+    </reasoning>
+    <output>{"quantity_limits": "Tremfya (guselkumab) 100 mg/mL prefilled syringe/One-press injector: 1 syringe/injector per 56 days; Exception limit: 2 syringes/injectors per 28 days; Tremfya (guselkumab) 200 mg/2 mL prefilled syringe/pen: 1 syringe/pen per 28 days; Exception limit: 6 syringes/pens per 56 days"}</output>
+  </example>
+
+  <example id="6" description="'Quantity Limits and duration' combined section — extract PsO sub-bullets only">
+    <policy_excerpt>
+      Quantity Limits and duration:
+      - Initial therapy: Approve for 6 months
+          Psoriasis: quantity limit 1 injection/4 weeks for the first 2 fills,
+            followed by 1 injection/12 weeks.
+          Psoriatic arthritis: quantity limit 1 injection/4 weeks for the first 2 fills,
+            followed by 1 injection/12 weeks.
+          Crohn's disease: quantity limit 1 injection/8 weeks
+          Ulcerative colitis: quantity limit 1 injection/8 weeks
+      - Continuation of therapy: Approve for 1 year
+          Psoriasis: quantity limit 1 injection/12 weeks
+          Psoriatic arthritis: quantity limit 1 injection/12 weeks
+          Crohn's disease: quantity limit 1 injection/8 weeks
+          Ulcerative colitis: quantity limit 1 injection/8 weeks
+    </policy_excerpt>
+    <reasoning>
+      Rule 6 applies. Ignore "Approve for 6 months" / "Approve for 1 year" lines
+      (authorization duration). Extract only the Psoriasis sub-bullets.
+      Exclude Psoriatic arthritis, Crohn's disease, Ulcerative colitis
+      (all explicitly non-PsO labels per Rule 5).
+    </reasoning>
+    <output>{"quantity_limits": "Psoriasis (initial): quantity limit 1 injection/4 weeks for the first 2 fills, followed by 1 injection/12 weeks; Psoriasis (continuation): quantity limit 1 injection/12 weeks"}</output>
+  </example>
+
+  <example id="7" description="'Dosing regimen' section — do NOT capture even if amounts are specific">
+    <policy_excerpt>
+      4. Dosing regimen:
+          d. Tremfya subcutaneous (guselkumab SQ):
+              i. Adults only, 18 years and older: 100 mg weeks zero, four, and then
+                 every eight weeks thereafter.
+    </policy_excerpt>
+    <reasoning>
+      The section header is "Dosing regimen" — this is NOT a quantity limit section.
+      Per Rule 1, the label test is non-negotiable. Even though the content contains
+      a specific dosing schedule with amounts and frequencies, the section label
+      "Dosing regimen" means we must return NA. The label overrides the content.
+    </reasoning>
+    <output>{"quantity_limits": "NA"}</output>
+  </example>
+
+  <example id="8" description="'## Quantity Limits' nested inside 'Dosage and Administration' — capture">
+    <policy_excerpt>
+      ## Dosage and Administration
+      Approvals may be subject to dosing limits in accordance with FDA-approved
+      labeling, accepted compendia, and/or evidence-based practice guidelines.
+
+      ## Quantity Limits
+      | Medication                          | Quantity Limit                                  |
+      | Ustekinumab SC 45 mg/0.5 mL syringe | Psoriasis: 2 syringes per first 28 days (load); |
+      |                                     | 1 syringe every 12 weeks (maintenance)          |
+    </policy_excerpt>
+    <reasoning>
+      The parent section "Dosage and Administration" contains a disclaimer line
+      about dosing limits — this is boilerplate. Continue reading past it.
+      The subsection "## Quantity Limits" with its explicit QL table is the
+      actual quantity limit. The "Psoriasis" row is PsO-relevant. Capture it.
+    </reasoning>
+    <output>{"quantity_limits": "Ustekinumab SC 45 mg/0.5 mL: Psoriasis: 2 syringes per first 28 days (load); 1 syringe every 12 weeks (maintenance)"}</output>
   </example>
 
 </examples>
