@@ -19,19 +19,16 @@ indication-specific criteria.
 Extract step therapy requirements for {brand} ({generics_list}) from the PA policy
 document below. Focus exclusively on plaque psoriasis (PsO), moderate-to-severe only.
 
-Return ONLY a JSON object with exactly 4 keys. No explanation, no preamble,
+Return ONLY a JSON object with exactly 5 keys. No explanation, no preamble,
 no markdown formatting.
 </task>
 
 <scope>
 INDICATION SCOPE: Extract ONLY criteria for moderate-to-severe plaque psoriasis (PsO).
-Ignore all criteria for: psoriatic arthritis (PsA), juvenile psoriatic arthritis (JPsA),
-Crohn's disease (CD), ulcerative colitis (UC), rheumatoid arthritis (RA),
-ankylosing spondylitis (AS), hidradenitis suppurativa (HS), guttate psoriasis,
-pustular psoriasis, erythrodermic psoriasis, palmoplantar psoriasis, or any other
-non-plaque-psoriasis indication.
-If the policy distinguishes between moderate-to-severe and severe PsO, extract ONLY
-the moderate-to-severe criteria.
+Ignore all criteria for: psoriatic arthritis (PsA), Crohn's disease (CD), ulcerative
+colitis (UC), rheumatoid arthritis (RA), ankylosing spondylitis (AS), hidradenitis
+suppurativa (HS), guttate psoriasis, pustular psoriasis, erythrodermic psoriasis,
+or any other non-plaque-psoriasis indication.
 
 BRAND SCOPE: Extract criteria a patient must complete BEFORE accessing {brand}.
 Include BOTH universal criteria (applying to all drugs in the policy) AND
@@ -39,22 +36,17 @@ indication-specific criteria (applying to plaque psoriasis). Combine via AND.
 </scope>
 
 <business_rules>
-<!-- ============================================================
-     USER: Verify each rule below against PA_Business_Rules.xlsx
-     before running.
-     ============================================================ -->
 
   <rule id="1" name="preferred_product_detection" priority="CRITICAL">
     BEFORE extracting anything, check whether {brand} is listed as a PREFERRED
     or PREFERRED AGENT product in this policy.
 
     If {brand} IS preferred: the step therapy and exception criteria describe how
-    patients access NON-PREFERRED (targeted) drugs, NOT how they access {brand}.
-    Return NA for ALL FOUR fields immediately. Do not extract the exception criteria
-    as if they apply to {brand}.
+    patients access NON-PREFERRED drugs, NOT how they access {brand}. Return NA
+    for ALL FOUR fields immediately.
 
     Signs that {brand} is preferred: appears in a "Preferred Products" table or list,
-    labeled "Preferred*" alongside other brands. The step/exception criteria are then
+    labeled "Preferred" alongside other brands. The step/exception criteria are then
     for accessing non-preferred products.
 
     If {brand} is NOT preferred, proceed with remaining rules.
@@ -73,15 +65,59 @@ indication-specific criteria (applying to plaque psoriasis). Combine via AND.
     sections labeled for psoriasis, PsO, or plaque psoriasis.
   </rule>
 
-  <rule id="3" name="or_logic_least_restrictive">
-    When two requirement statements appear with NO explicit connector, default to OR.
-    When criteria are explicitly joined by OR, apply the LEAST RESTRICTIVE path
-    (choose the option requiring fewest total steps).
+  <rule id="3" name="or_logic_least_restrictive" priority="CRITICAL">
+    When criteria are joined by OR (explicit OR, "any of the following", "ONE of
+    the following"), apply Rule 3: use the LEAST RESTRICTIVE path — the option
+    requiring the FEWEST total steps of that type.
 
-    Example: "failed biologic A OR failed methotrexate" → OR group, patient only
-    needs ONE. Count the least restrictive option (1 step, not 2).
+    MANDATORY: Before assigning any step count, scan ALL branches of OR criteria
+    for ZERO-STEP PATHS. If ANY branch requires zero steps, that parameter = NA.
 
-    When criteria are explicitly joined by AND, ALL requirements count.
+    RECOGNIZED ZERO-STEP PATHS — these always yield NA for the relevant parameter:
+
+    A. SEVERITY PATHS (most common — check every policy):
+       - "Severe active PsO (e.g., greater than 10% BSA, hands/feet/face/scalp/
+         genitals, intractable pruritus, serious emotional consequences)"
+       - "Crucial body areas affected (hands, feet, face, neck, scalp,
+         genitals/groin, intertriginous areas)"
+       - "At least 10% BSA is affected" — NO prior treatment required
+       - "Concomitant severe PsA (erosive disease, elevated ESR/CRP, rapidly
+         progressive)" — allows biologic access without PsO step therapy
+       These are 0-step paths → num_steps_generic = NA, num_steps_brands = NA
+
+    B. CONTRAINDICATION ESCAPES:
+       - "OR has an FDA labeled contraindication to ALL conventional agents" =
+         equal-level OR → 0 generic steps → num_steps_generic = NA
+       - "OR has an FDA labeled contraindication to ALL [biologic/preferred] agents"
+         = equal-level OR → 0 branded steps → num_steps_brands = NA
+       - When a multi-agent requirement states "failure OR intolerance OR
+         contraindication with N of the following therapies," the contraindication
+         option means each counted agent can be met via contraindication = 0 actual
+         drug steps → brands = NA under least-restrictive logic
+
+    C. ¥-NOTE OR FOOTNOTE BLANKET EXCEPTIONS:
+       Scan for footnotes, ¥-notes, dagger notes (¥, †, *) at the BOTTOM or MARGIN
+       of criteria blocks. Language like:
+       - "For patients already established on biologic therapy OR those with >10%
+         BSA involvement, trial and failure of [step requirements] is NOT required"
+       - "¥ Note: Step therapy waived for established biologic patients or >10% BSA"
+       These blanket exceptions create a 0-step path for all requirements under that
+       note → set num_steps_generic = NA, step_phototherapy = "No"
+
+    D. CONTINUITY PATHS:
+       - "Patient is currently being treated with the requested agent" = 0-step path
+         for all step parameters
+       - "Medication history indicates prior use of a biologic for PsO" = prior
+         biologic already tried → step count may still apply for NEW patients
+
+    CRITICAL ABOUT SEVERITY PATHS: "Severe disease" OR "crucial body areas" language
+    almost ALWAYS appears as an equal-level OR alternative alongside conventional
+    therapy failure criteria. When present, it means: patients with severe enough
+    disease can access {brand} WITHOUT any prior step therapy. Apply Rule 3 →
+    return NA for the relevant step parameter.
+
+    When criteria are joined by AND, ALL requirements count cumulatively.
+    When NO explicit connector is present, default to OR.
   </rule>
 
   <rule id="4" name="branded_step_counting">
@@ -89,24 +125,24 @@ indication-specific criteria (applying to plaque psoriasis). Combine via AND.
     drugs that must be completed BEFORE accessing {brand}.
 
     Counts as branded:
-    - Any specific biologic drug named (Humira, Enbrel, Remicade, Cosentyx,
-      Otezla, Sotyktu, any TNF inhibitor, IL inhibitor, JAK inhibitor, TYK2 inhibitor)
+    - Any named biologic drug (Humira, Enbrel, Cosentyx, Otezla, Skyrizi,
+      Stelara, Tremfya, any TNF inhibitor, IL inhibitor, JAK inhibitor, TYK2 inhibitor)
     - Drug classes described as "biologic", "targeted synthetic", or "targeted immune
       modulator" — even if no specific brand is named
-    - A preferred ustekinumab or adalimumab biosimilar that the patient must fail
-      BEFORE accessing another ustekinumab or adalimumab product counts as 1 branded step
-    - If the policy references a DRUG CLASS (e.g., "CAM antagonists", "IL-23 inhibitors")
-      and {brand} belongs to that class, the class-level step counts as a branded step
-      for {brand}
+    - A preferred biosimilar the patient must fail BEFORE accessing another product
+      counts as 1 branded step
+    - If the policy references a DRUG CLASS (e.g., "CAM antagonists", "IL-23
+      inhibitors") and {brand} belongs to that class, the class-level step counts
+      as a branded step FOR {brand}
     - If {brand} is non-preferred and universal criteria require stepping through
       preferred biologic alternatives, those preferred biologics count as branded steps
 
-    Does NOT count as branded:
-    - {brand} itself (we count steps TO reach {brand}, not {brand} itself)
+    Does NOT count:
+    - {brand} itself (count steps TO reach {brand}, not {brand} itself)
     - Conventional/non-biologic agents (methotrexate, cyclosporine, acitretin, topicals)
     - Phototherapy (handled separately)
 
-    Output: integer as string ("1", "2", etc.)
+    Output: integer string ("1", "2", etc.)
     Output "NA" if NO branded steps are required. Never output "0".
   </rule>
 
@@ -115,63 +151,62 @@ indication-specific criteria (applying to plaque psoriasis). Combine via AND.
     before accessing {brand}.
 
     Counts as generic:
-    - Conventional systemic agents: methotrexate, cyclosporine, acitretin
-    - Topical agents: corticosteroids, vitamin D analogs (calcipotriene/calcipotriol),
-      tazarotene, coal tar, anthralin
+    - Conventional systemic agents: methotrexate (MTX), cyclosporine, acitretin
+    - Topical agents: corticosteroids, vitamin D analogs (calcipotriene/calcitriol),
+      tazarotene, coal tar, anthralin, calcineurin inhibitors (tacrolimus, pimecrolimus)
     - Any agent described as "conventional", "non-biologic", or "traditional systemic"
-    - If a step is required but no specific drug or biologic class is named, it defaults
-      to a generic step
-    - If {brand} is non-preferred and universal criteria require stepping through
-      preferred alternatives that are NOT identified as biologics, those count as generic
+    - If a step is required but no specific drug or biologic class is named, it
+      defaults to a generic step
 
-    Does NOT count as generic:
+    Does NOT count:
     - Phototherapy (UVB, PUVA) — handled in step_phototherapy
     - Biologic or targeted synthetic drugs
 
-    Output: integer as string ("1", "2", etc.)
+    Output: integer string ("1", "2", etc.)
     Output "NA" if NO generic steps are required. Never output "0".
   </rule>
 
   <rule id="6" name="phototherapy_rule">
     step_phototherapy:
 
-    "Yes": phototherapy is a MANDATORY step with no OR alternative. The patient
-    MUST complete phototherapy before accessing {brand}.
+    "Yes": phototherapy is a MANDATORY step with no OR alternative at the same
+    level. The patient MUST complete phototherapy before accessing {brand}.
+    Only use "Yes" when phototherapy and conventional therapy are joined by AND
+    (both required simultaneously), not when phototherapy is one option in an OR.
 
     "No": phototherapy is NOT a mandatory step. Use "No" when:
     - Phototherapy appears as ONE option in an OR group (not mandatory)
     - Phototherapy is not mentioned as a required step
-    - Phototherapy appears in denial/contraindication criteria (patient must NOT
-      be receiving it — this is NOT a step requirement)
-    - Phototherapy is mentioned in step_therapy_text for documentation purposes
-      but not as a mandatory standalone step
+    - Phototherapy appears in denial/contraindication criteria
+    - The ¥-note or severe-disease path creates a 0-step path (photo not required)
+    - The policy has OR paths that don't require phototherapy (even if one OR
+      branch does require it — the non-phototherapy path is less restrictive)
 
     "NA": the policy lists no criteria at all for the indication.
 
-    IMPORTANT — AND override in drug-specific subsections:
-    Some policies list phototherapy as optional (OR) in the BASE criteria but then
-    add a drug-specific subsection that changes it to mandatory (AND) for {brand}
-    or its class. Always check drug-specific subsections for override language such as:
-    - "For [drug class]: member must demonstrate failure of BOTH oral agent AND
-      phototherapy" → the AND here overrides the base OR → step_phototherapy = "Yes"
+    AND override in drug-specific subsections: Some policies list phototherapy as
+    optional (OR) in base criteria but a drug-specific subsection changes it to
+    mandatory (AND) for {brand} or its class. Always check drug-specific subsections
+    for override language such as:
+    - "member must demonstrate failure of BOTH oral agent AND phototherapy" → Yes
     - "Coverage Criteria 1 through 2 are applicable; however, member must
-      demonstrate failure of both oral agent AND phototherapy" → step_phototherapy = "Yes"
-    The drug-specific subsection takes precedence over the base criteria.
+      demonstrate failure of both oral agent AND phototherapy" → Yes
   </rule>
 
   <rule id="7" name="step_therapy_text_content">
     step_therapy_text: Capture ALL step therapy language for plaque psoriasis,
     combining universal and indication-specific criteria verbatim or near-verbatim.
-    Include phototherapy language if it appears within step statements (even though
-    it is tracked separately in step_phototherapy).
-    If the policy distinguishes moderate-to-severe and severe PsO, capture ONLY
-    the moderate-to-severe criteria text.
+    Include severity bypass language (≥10% BSA, crucial body areas) if present —
+    this language is critical evidence for why steps may be NA.
+    Include any ¥-notes or blanket exception language that waives step requirements.
+    Include phototherapy language if it appears within step statements.
     Output "NA" if {brand} is preferred or no step therapy criteria exist.
   </rule>
 
   <rule id="8" name="output_values_summary">
     Valid values:
-    - step_therapy_text: Verbatim criteria text, or "NA"
+    - step_therapy_text: Verbatim criteria text (including bypass/exception
+      language), or "NA"
     - num_steps_brands: "1", "2", etc. — or "NA" if none required. NEVER "0".
     - num_steps_generic: "1", "2", etc. — or "NA" if none required. NEVER "0".
     - step_phototherapy: "Yes", "No", or "NA"
@@ -181,121 +216,297 @@ indication-specific criteria (applying to plaque psoriasis). Combine via AND.
     Some policies (e.g., state Medicaid formularies) apply criteria to ALL
     "non-preferred drugs in a class" rather than naming specific brands. If you
     see language like:
+    - "Clinical criteria for approval of a PA request for non-preferred cytokine
+      and CAM antagonist drugs used to treat psoriasis are all of the following:"
+    - "Non-preferred agents require 90-day trials of all preferred agents"
 
-    - "Clinical criteria for approval of a PA request for non-preferred cytokine and
-      CAM antagonist drugs used to treat psoriasis are all of the following: [criteria]"
-    - "Non-preferred agents require 90-day trials of all preferred agents indicated
-      for the diagnosis"
+    AND {brand} appears in the NON-PREFERRED drug list for plaque psoriasis:
+    those class-level criteria apply to {brand}. Extract them as step requirements.
 
-    AND {brand} ({generics_list}) appears in the NON-PREFERRED drug list for plaque
-    psoriasis in the same document: those class-level criteria apply to {brand}.
-    Extract them as the step therapy requirements.
-
-    When preferred drugs are explicitly listed (e.g., "Preferred: Cimzia, Enbrel,
-    Humira, Otezla"), count the number of DISTINCT preferred drug trials required
-    to determine num_steps_brands.
+    When preferred drugs are explicitly listed, count the number of DISTINCT
+    preferred drug trials required to determine num_steps_brands.
   </rule>
 
   <rule id="10" name="header_section_step_requirements">
-    Some policies (BRM addendums, class-level documents) state step therapy
-    requirements for non-preferred drugs in a HEADER or CLASSIFICATION section
-    that appears BEFORE the numbered clinical criteria list — not inside the
-    numbered list itself.
+    Some policies state step therapy requirements for non-preferred drugs in a
+    HEADER or CLASSIFICATION section that appears BEFORE the numbered criteria
+    list — not inside the numbered list itself.
 
-    Always scan introductory or classification paragraphs at the top of the document
-    for statements such as:
-    - "Non-Preferred Cytokines and CAM Antagonists: Require trial and failure of a
-      preferred adalimumab product AND one additional preferred product (Enbrel, Otezla)"
+    Always scan introductory or classification paragraphs for statements such as:
+    - "Non-Preferred Cytokines and CAM Antagonists: Require trial and failure of
+      a preferred adalimumab product AND one additional preferred product"
     - "All non-preferred anti-TNFs require trial and failure of a preferred
       adalimumab product AND Enbrel"
 
-    These header-level requirements count as MANDATORY branded steps EVEN IF they
-    do not appear in the numbered criteria. Combine them with the numbered criteria
-    via AND when computing num_steps_brands.
+    These header-level requirements count as MANDATORY branded steps even if they
+    do not appear in the numbered criteria. Combine with numbered criteria via AND.
   </rule>
 
-  <rule id="9" name="multi_layer_class_level_criteria">
-  Some multi-drug policies have TWO layers of step therapy that BOTH apply
-  to {brand}:
+  <rule id="11" name="step_table_position_detection" priority="HIGH">
+    MULTI-DRUG PBM POLICIES WITH A STEP TABLE: Many large multi-drug policies
+    contain a "Step Table" or "Step Tier" grid specifying which agents require
+    prior failures of other agents. This creates TWO separate layers of criteria
+    that BOTH apply to {brand}:
 
-  LAYER 1 — GENERAL criteria: numbered requirements applying to all drugs
-  in the formulary (e.g., "Criteria 1. BSA ≥10%", "Criteria 2. Three-month
-  trial of oral agent OR phototherapy"). These are necessary but NOT
-  sufficient for {brand}.
+    LAYER 1 — STEP TABLE TIER: Identifies how many preferred agents must have been
+    tried before {brand} is accessible.
+      - Step 1a = first-line preferred agent → NO biologic prerequisite (brands=NA)
+      - Step 1b = directed to ONE TNF inhibitor → brands=1
+      - Step 2 = directed to ONE Step 1 agent → brands=1
+      - Step 3a = directed to TWO Step 1 agents → brands=2
+      - Step 3b = directed to TWO Step 1 or 2 agents → brands=2
+      - Step 3c = directed to THREE Step 1 agents → brands=3
 
-  LAYER 2 — DRUG-SPECIFIC criteria: a separate numbered subsection that
-  names {brand} or {generics_list} explicitly and adds ADDITIONAL
-  requirements on top of Layer 1 (e.g., "5. For Guselkumab, Ustekinumab:
-  a. Criteria 1 and 2 are applicable; HOWEVER, member must demonstrate
-  failure of BOTH oral agent AND phototherapy... b. Member must fail ALL
-  preferred anti-TNF agents...").
+    LAYER 2 — INDICATION CRITERIA: What the patient must have tried for PsO itself
+    (conventional agents, phototherapy) BEFORE any biologic.
 
-  CRITICAL: When both layers exist, the step therapy for {brand} is the
-  COMBINATION of both layers — not just one or the other. Look for
-  language like:
-    - "For {brand} / {generics_list}:"
-    - "Coverage Criteria X through Y are applicable; HOWEVER..."
-    - "Additional requirement for {generics_list}:"
+    BOTH layers apply. The num_steps_brands from Layer 1 AND num_steps_generic from
+    Layer 2 are CUMULATIVE (combined via AND).
 
-  When Layer 2 changes an OR to an AND (e.g., "must fail BOTH oral agent
-  AND phototherapy" instead of "either...or"), the AND version overrides.
-  Set step_phototherapy = "Yes" in that case.
+    CRITICAL: Scan the Step Table explicitly. Find which row/tier contains {brand}
+    or {generics_list}. Extract the biologic prerequisite from that tier level.
+    Do NOT miss the Step Table simply because the drug-specific indication criteria
+    section is visible — BOTH layers must be checked.
+
+    ZERO-STEP ESCAPE IN STEP TABLE: If the Step Table criteria for {brand}'s tier
+    include "OR has FDA labeled contraindication to ALL required Step N agents,"
+    that is a 0-step escape → brands=NA under Rule 3.
+  </rule>
+
+  <rule id="12" name="wrong_section_extraction_prevention" priority="CRITICAL">
+    WRONG-SECTION EXTRACTION: In multi-drug policies, {brand} may appear in
+    another drug's criteria as a REQUIRED PREREQUISITE (what patients must fail
+    before getting that OTHER drug). DO NOT extract those as criteria FOR {brand}.
+
+    DISTINGUISH CAREFULLY:
+    - "Criteria FOR {brand}" = what the patient must do to ACCESS {brand}.
+      These should be extracted.
+    - "{brand} appears in ANOTHER drug's criteria as a prerequisite" = {brand}
+      is listed as a drug the patient must have ALREADY tried before getting that
+      other drug. These should NOT be extracted for {brand} itself.
+
+    DETECTION: If you see language like:
+    "For [OTHER DRUG]: Patient has tried TWO of Enbrel, Humira, {brand}, Skyrizi..."
+    → This tells you what patients need before OTHER DRUG, not what they need
+    before {brand}. {brand} here is a prerequisite for ANOTHER drug, not the
+    target. Return NA if {brand}'s OWN criteria cannot be found separately.
+
+    SAFE CHECK: Before extracting, confirm the criteria section is titled for or
+    explicitly applies to {brand} or {generics_list}, not to another drug that
+    lists {brand} as a prerequisite.
+  </rule>
+
+  <rule id="13" name="or_path_mixing_prevention" priority="CRITICAL">
+    DO NOT MIX SUB-OPTIONS FROM DIFFERENT OR BRANCHES.
+
+    When a single criterion lists multiple sub-options separated by OR (e.g.,
+    "ONE of: oral therapy (MTX, cyclosporine, acitretin) OR PUVA OR biologic
+    (Humira, Remicade)"), the patient only needs ONE sub-option to satisfy that
+    single criterion. These are ALTERNATIVES, not cumulative.
+
+    WRONG (do not do this):
+    - Counting the biologic sub-option toward brands=1 AND SIMULTANEOUSLY
+    - Counting the oral therapy sub-option toward generic=1
+    Result: num_steps_brands=1 AND num_steps_generic=1 — WRONG.
+
+    CORRECT (do this instead):
+    - Apply Rule 3: choose the LEAST RESTRICTIVE single sub-option.
+    - If oral therapy OR biologic OR contraindication path exist at equal level:
+      check for 0-step alternatives first. If a contraindication escape exists
+      (e.g., "OR patient has contraindication to one oral agent"), that = 0 steps
+      for that criterion → relevant step parameter = NA.
+    - If no 0-step alternative: choose the least restrictive sub-option for each
+      parameter SEPARATELY.
+
+    SPECIFICALLY: if the OR group contains a path where NO biologic is required,
+    num_steps_brands = NA. If it contains a path where NO conventional agent is
+    required, num_steps_generic = NA. Assess each parameter independently.
+  </rule>
+
+  <rule id="14" name="parenthetical_exception_vs_equal_level_or">
+    PARENTHETICAL MODIFIER (narrow exception, NOT a 0-step path):
+    - "(or is not a candidate)" within a step requirement
+    - "(unless contraindicated)" within a step requirement
+    - "(or clinically significant adverse effects are experienced)" within a requirement
+    These are narrow medical exceptions embedded WITHIN a step requirement.
+    They allow the prescriber to waive that specific step for specific patients,
+    but they do NOT create a freestanding alternative path. Do NOT treat these
+    as 0-step paths. Still count the step.
+
+    EQUAL-LEVEL OR CLAUSE (true 0-step path via Rule 3):
+    - "OR has an FDA labeled contraindication to ALL conventional agents" — a
+      SEPARATE, INDEPENDENT clause at the SAME grammatical level as the failure
+      requirement. This IS an equal-level OR. Apply Rule 3 → relevant step = NA.
+    - "OR has severe active PsO (≥10% BSA)" — disease severity at equal level.
+    - "OR contraindication to phototherapy, acitretin, cyclosporine, and methotrexate"
+      — equal-level OR clause removing all step requirements.
+
+    KEY TEST: Is the contraindication/exception stated as a SEPARATE NUMBERED or
+    BULLETED OPTION at the same level as the failure option? If yes = equal-level
+    OR = 0-step path. If it is embedded in parentheses or after "unless" within a
+    single sentence = parenthetical modifier = still counts as a step.
+  </rule>
+
+  <rule id="15" name="multi_layer_class_level_criteria">
+    Some multi-drug policies have TWO layers of step therapy that BOTH apply
+    to {brand}:
+
+    LAYER 1 — GENERAL criteria: numbered requirements applying to all drugs
+    in the formulary (e.g., "Criteria 1. BSA ≥3%", "Criteria 2. Three-month
+    trial of oral agent OR phototherapy"). These are necessary but NOT
+    sufficient for {brand}.
+
+    LAYER 2 — DRUG-SPECIFIC criteria: a separate numbered subsection naming
+    {brand} or {generics_list} explicitly and adding ADDITIONAL requirements
+    on top of Layer 1 (e.g., "5. For Guselkumab, Ustekinumab: a. Criteria 1
+    and 2 are applicable; HOWEVER, member must demonstrate failure of BOTH
+    oral agent AND phototherapy... b. Member must fail ALL preferred anti-TNF
+    agents...").
+
+    When both layers exist, the step therapy for {brand} is the COMBINATION
+    of both layers — not just one or the other. Look for language like:
+      - "For {brand} / {generics_list}:"
+      - "Coverage Criteria X through Y are applicable; HOWEVER..."
+      - "Additional requirement for {generics_list}:"
+
+    When Layer 2 changes an OR to an AND (e.g., "must fail BOTH oral agent
+    AND phototherapy"), the AND version overrides. Set step_phototherapy = "Yes".
   </rule>
 
 </business_rules>
 
 <examples>
 
-  <example id="1" description="Reference Tab gold standard — universal AND indication-specific with OR">
-    <context>
-      Extracting for STELARA. Policy: Aetna ustekinumab clinical policy bulletin.
-      Universal criterion: patient must fail Yesintek (a different ustekinumab biosimilar)
-      before accessing STELARA.
-    </context>
+  <example id="1" description="Severity bypass present — return NA for all step parameters">
     <policy_excerpt>
-      Documentation for all indications:
-      The patient is unable to take Yesintek (ustekinumab-kfce), where indicated,
-      for the given diagnosis due to a trial and inadequate treatment response or
-      tolerance, or a contraindication. Documentation is required for approval.
-
-      Authorization of 12 months may be granted for members 6 years of age and older
-      who have previously received a biologic or targeted synthetic drug (e.g., Sotyktu,
-      Otezla) indicated for treatment of moderate to severe plaque psoriasis.
-
-      OR at least 3% of body surface area (BSA) is affected and the member meets either:
-      -- Inadequate response or intolerance to phototherapy (e.g., UVB, PUVA) or
-         pharmacologic treatment with methotrexate, cyclosporine, or acitretin.
-      -- Clinical reason to avoid pharmacologic treatment with methotrexate, cyclosporine,
-         and acitretin.
+      For plaque psoriasis, the patient meets ONE of the following:
+      1. Patient has severe active PsO (e.g., greater than 10% BSA, hands/feet/
+         scalp/face/genitals, intractable pruritus, serious emotional consequences)
+      2. Patient has concomitant severe PsA (erosive disease, elevated ESR/CRP)
+      3. Patient has failed ONE conventional agent (methotrexate, cyclosporine,
+         acitretin, topical corticosteroids, PUVA) used in the treatment of PsO
+         after at least a 3-month duration of therapy
+      4. Patient has an intolerance to ONE conventional agent
+      5. Patient has an FDA labeled contraindication to ALL conventional agents
     </policy_excerpt>
     <reasoning>
-      Universal: fail Yesintek = 1 branded step.
-      Indication-specific: two statements with no explicit connector → default OR.
-      Path A: previously received a biologic/targeted synthetic → 1 branded step.
-      Path B: phototherapy OR methotrexate/cyclosporine/acitretin.
-        Phototherapy is in an OR group → not mandatory.
-        Methotrexate/cyclosporine/acitretin = 1 generic step minimum.
-        Least restrictive of Path B = 1 generic step.
-      Comparing A vs B: A = 1 branded, B = 1 generic.
-      Least restrictive overall = B (1 generic step).
-      Final: Universal 1 branded AND indication 1 generic = num_steps_brands=1, num_steps_generic=1.
-      Phototherapy is in OR group, not mandatory → step_phototherapy="No".
+      Rule 3: Check ALL branches for 0-step paths FIRST.
+      Options 1 and 2 are severity paths requiring NO prior treatment — these are
+      0-step paths at equal grammatical level to options 3-5.
+      Under Rule 3 (least restrictive): options 1 and 2 = 0 steps → num_steps_generic = NA.
+      Phototherapy (PUVA) appears only within option 3 alongside oral agents (OR within
+      option 3), and the whole criterion is itself in an OR group (options 1-5).
+      The non-phototherapy path is less restrictive → step_phototherapy = "No".
+      No biologic prerequisite → num_steps_brands = NA.
     </reasoning>
     <output>
       {
-        "step_therapy_text": "Documentation for all indications: The patient is unable to take Yesintek (ustekinumab-kfce) due to a trial and inadequate treatment response or tolerance, or a contraindication. Plaque psoriasis: previously received a biologic or targeted synthetic drug (e.g., Sotyktu, Otezla); OR at least 3% BSA affected and inadequate response or intolerance to phototherapy or methotrexate, cyclosporine, or acitretin (or clinical reason to avoid them).",
-        "num_steps_brands": "1",
-        "num_steps_generic": "1",
-        "step_phototherapy": "No"
+        "step_therapy_text": "For plaque psoriasis, ONE of: (1) severe active PsO [>10% BSA, crucial body areas, intractable pruritus, serious emotional consequences]; (2) concomitant severe PsA; (3) failed ONE conventional agent [MTX, cyclosporine, acitretin, topicals, PUVA] ≥3 months; (4) intolerance to ONE conventional agent; (5) FDA labeled contraindication to ALL conventional agents.",
+        "num_steps_brands": "NA",
+        "num_steps_generic": "NA",
+        "step_phototherapy": "No",
+        "_reasoning": "Options 1 and 2 are equal-level 0-step severity paths; Rule 3 yields NA for all step parameters."
       }
     </output>
   </example>
 
-  <example id="2" description="Brand is PREFERRED — return NA for all fields">
-    <context>
-      Extracting for STELARA. Aetna Medicare Part B Step Criteria.
-      STELARA is listed as a preferred product.
-    </context>
+  <example id="2" description="¥-note blanket exception — overrides AND-required steps">
+    <policy_excerpt>
+      Patient meets ALL of the following ¥:
+      - Patient did not respond adequately (or is not a candidate) to a 4-week
+        minimum trial of topical agents; AND
+      - Patient did not respond adequately (or is not a candidate) to a 3-month
+        minimum trial of at least one non-biologic systemic agent; AND
+      - Patient did not respond adequately (or is not a candidate) to a 3-month
+        minimum trial of phototherapy (PUVA or UVB)
+
+      ¥ Note: For patients already established on biologic therapy, targeted
+      synthetic therapy, or those with >10% BSA involvement, trial and failure of
+      topical agents, non-biologic systemic agents, and phototherapy is NOT required.
+    </policy_excerpt>
+    <reasoning>
+      The ¥-note creates a complete 0-step path for patients with >10% BSA or
+      existing biologic therapy. Under Rule 3 (least restrictive), this blanket
+      exception means all step parameters = NA, photo = "No".
+      The "(or is not a candidate)" are parenthetical modifiers within each step —
+      they do NOT create independent 0-step paths. The ¥-note DOES create one.
+    </reasoning>
+    <output>
+      {
+        "step_therapy_text": "Patient must have tried topical agents AND non-biologic systemic agent AND phototherapy — BUT: ¥ For patients with >10% BSA or established on biologic therapy, ALL step therapy requirements are waived.",
+        "num_steps_brands": "NA",
+        "num_steps_generic": "NA",
+        "step_phototherapy": "No",
+        "_reasoning": "¥-note creates a complete 0-step path for common moderate-severe PsO patients (>10% BSA); Rule 3 yields NA for all step parameters."
+      }
+    </output>
+  </example>
+
+  <example id="3" description="Step Table — non-preferred drug requiring TWO preferred biologics">
+    <policy_excerpt>
+      Step Table for Plaque Psoriasis:
+      Step 1a (Preferred): adalimumab products, Cosentyx, Enbrel, Otezla, Skyrizi,
+                           Stelara, Tremfya
+      Step 3a (Non-Preferred, directed to TWO Step 1 agents): Bimzelx, Cimzia, ILUMYA
+
+      For Ilumya (plaque psoriasis):
+      d. Member meets ONE of the following (indication criteria):
+         i. Therapeutic failure or intolerance to phototherapy (PUVA, UVB)
+         ii. Therapeutic failure or intolerance to at least one systemic therapy
+             (e.g., methotrexate)
+         iii. Contraindicated to BOTH phototherapy AND systemic therapy
+      e. Therapeutic failure or intolerance to at least two (2) step 1 or 2
+         plan-preferred agents for PsO.
+    </policy_excerpt>
+    <reasoning>
+      ILUMYA is at Step 3a → 2 preferred biologic/targeted agents required (criterion e).
+      No "contraindication to ALL" escape stated for criterion e → brands=2 (hard requirement).
+      For indication criteria (criterion d):
+      - Option iii (contraindicated to BOTH phototherapy AND systemic therapy) = equal-level
+        OR at same level as i and ii → 0-step path for generics under Rule 3 → generic=NA.
+      - Under Rule 6: phototherapy in OR with systemic therapy → photo=No.
+    </reasoning>
+    <output>
+      {
+        "step_therapy_text": "Step 3a non-preferred. Indication criteria: ONE of (i) phototherapy failure/intolerance; (ii) ONE systemic therapy failure/intolerance; (iii) contraindicated to BOTH phototherapy AND systemic therapy. PLUS: failure/intolerance to at least TWO step 1 or 2 preferred agents.",
+        "num_steps_brands": "2",
+        "num_steps_generic": "NA",
+        "step_phototherapy": "No",
+        "_reasoning": "Step Table places ILUMYA at Step 3a (brands=2). Indication option iii is equal-level 0-step escape for generics. Phototherapy in OR group → No."
+      }
+    </output>
+  </example>
+
+  <example id="4" description="Wrong-section extraction — brand appears as prerequisite for another drug">
+    <policy_excerpt>
+      For Cimzia — Plaque Psoriasis:
+      Patient has tried TWO of Enbrel, adalimumab product, Otezla, Skyrizi,
+      Stelara subcutaneous, Taltz, or TREMFYA.
+
+      For Enbrel — All Conditions:
+      Approve if patient meets the standard Inflammatory Conditions - Enbrel
+      Prior Authorization Policy criteria.
+    </policy_excerpt>
+    <reasoning>
+      Extracting for ENBREL. The "tried TWO of Enbrel, ... Tremfya" text is
+      CIMZIA's prerequisites — Enbrel appears there as one of the drugs Cimzia
+      patients must have tried. This is NOT the criteria FOR Enbrel.
+      Enbrel's own criteria say "standard Inflammatory Conditions - Enbrel PA
+      criteria" (referenced elsewhere). Since no explicit step therapy is stated
+      for Enbrel in this document, return NA for all step fields.
+    </reasoning>
+    <output>
+      {
+        "step_therapy_text": "NA",
+        "num_steps_brands": "NA",
+        "num_steps_generic": "NA",
+        "step_phototherapy": "NA",
+        "_reasoning": "Enbrel appears in Cimzia's prerequisites (as a drug Cimzia patients must have tried), not in its own PA criteria. Enbrel's criteria reference a separate standard policy not in this document."
+      }
+    </output>
+  </example>
+
+  <example id="5" description="Brand is PREFERRED — return NA for all fields">
     <policy_excerpt>
       Preferred products: Cosentyx, Enbrel, Humira, Stelara, Tremfya...
       Non-preferred (targeted): Cimzia, Ilumya, Remicade...
@@ -304,59 +515,62 @@ indication-specific criteria (applying to plaque psoriasis). Combine via AND.
         2. Contraindication to all preferred products
     </policy_excerpt>
     <reasoning>
-      STELARA appears in the PREFERRED list. The exception criteria are for patients
-      accessing non-preferred drugs (Cimzia, Ilumya, Remicade). No step therapy
-      applies to STELARA itself — it IS the preferred drug. Return NA for all.
+      STELARA appears in the PREFERRED list. The exception criteria are for
+      patients accessing non-preferred drugs. No step therapy applies to STELARA
+      itself. Return NA for all.
     </reasoning>
     <output>
       {
         "step_therapy_text": "NA",
         "num_steps_brands": "NA",
         "num_steps_generic": "NA",
-        "step_phototherapy": "NA"
+        "step_phototherapy": "NA",
+        "_reasoning": "Stelara is listed as a Preferred product in this policy; the exception criteria apply to non-preferred drugs only."
       }
     </output>
   </example>
 
-  <example id="3" description="Phototherapy mandatory step — Yes">
-    <context>Policy requires phototherapy as mandatory first step for plaque psoriasis</context>
+  <example id="6" description="OR-path mixing prevention — three equal-level paths, one is 0-step">
     <policy_excerpt>
-      Patient must have tried and failed phototherapy (UVB or PUVA) AND at least one
-      conventional systemic agent (methotrexate, cyclosporine, or acitretin).
+      Patient meets ONE of the following:
+      (i) Has tried at least one of the following for ≥3 months: oral therapy
+          (MTX, cyclosporine, acitretin); oral methoxsalen plus UVA (PUVA);
+          or a biologic (Humira, Remicade, Stelara)
+      (ii) Experienced an intolerance to at least one oral or biologic therapy
+      (iii) Has a contraindication to one oral agent for psoriasis (e.g., MTX)
     </policy_excerpt>
     <reasoning>
-      Phototherapy is joined by AND (not OR) — both are mandatory.
-      Phototherapy = mandatory step → step_phototherapy="Yes".
-      Conventional agent (methotrexate/cyclosporine/acitretin) = 1 generic step.
-      No biologic/branded step required → num_steps_brands="NA".
+      Three equal-level OR paths: (i), (ii), (iii).
+      Path (iii): contraindication to ONE oral agent = prescriber determination,
+      no drug trial needed → 0-step path at equal level.
+      Rule 3: path (iii) = 0 steps → num_steps_generic = NA, num_steps_brands = NA.
+      WRONG approach (do not do): apply biologic sub-option of path (i) → brands=1
+      AND oral sub-option of path (i) → generic=1 simultaneously. This is OR-path
+      mixing — the patient needs only ONE of the sub-options within path (i).
     </reasoning>
+    <output>
+      {
+        "step_therapy_text": "Patient meets ONE of: (i) tried ≥3 months of oral therapy (MTX/cyclosporine/acitretin), PUVA, or biologic (Humira/Remicade/Stelara); (ii) intolerance to oral or biologic therapy; (iii) contraindication to one oral agent (e.g., MTX).",
+        "num_steps_brands": "NA",
+        "num_steps_generic": "NA",
+        "step_phototherapy": "No",
+        "_reasoning": "Path (iii) is equal-level 0-step escape; Rule 3 → NA for both brands and generic. Phototherapy in OR group within path (i) → No."
+      }
+    </output>
+  </example>
+
+  <example id="7" description="Phototherapy mandatory AND — step_phototherapy = Yes">
+    <policy_excerpt>
+      Patient must have tried and failed phototherapy (UVB or PUVA) AND at least
+      one conventional systemic agent (methotrexate, cyclosporine, or acitretin).
+    </policy_excerpt>
     <output>
       {
         "step_therapy_text": "Patient must have tried and failed phototherapy (UVB or PUVA) AND at least one conventional systemic agent (methotrexate, cyclosporine, or acitretin).",
         "num_steps_brands": "NA",
         "num_steps_generic": "1",
-        "step_phototherapy": "Yes"
-      }
-    </output>
-  </example>
-
-  <example id="4" description="Drug class reference counts as branded step">
-    <context>Extracting for TREMFYA (an IL-23 inhibitor). Policy names a drug class.</context>
-    <policy_excerpt>
-      Patient must have had an inadequate response to a TNF inhibitor AND one
-      conventional systemic agent (methotrexate, cyclosporine, or acitretin).
-    </policy_excerpt>
-    <reasoning>
-      TNF inhibitor is a drug class containing biologics. TREMFYA is NOT a TNF inhibitor,
-      so "TNF inhibitor" here is a required branded step BEFORE accessing TREMFYA.
-      1 branded step (TNF inhibitor class) + 1 generic step (conventional agent).
-    </reasoning>
-    <output>
-      {
-        "step_therapy_text": "Patient must have had an inadequate response to a TNF inhibitor AND one conventional systemic agent (methotrexate, cyclosporine, or acitretin).",
-        "num_steps_brands": "1",
-        "num_steps_generic": "1",
-        "step_phototherapy": "No"
+        "step_phototherapy": "Yes",
+        "_reasoning": "Phototherapy and conventional agent are joined by AND — both are mandatory. No severity bypass or OR escape present."
       }
     </output>
   </example>
@@ -372,11 +586,11 @@ Exactly these 5 keys:
   "num_steps_brands": "...",
   "num_steps_generic": "...",
   "step_phototherapy": "...",
-  "_reasoning": "One sentence: which section/rule drove your step count, or why you returned NA (e.g. '{brand} is in the Preferred Products list on page 2 — no step therapy applies')."
+  "_reasoning": "One sentence: which specific rule/path drove your decision (e.g., 'Rule 3: severity bypass at option 3 yields NA for generic; no biologic prerequisite'). Mention the specific text that triggered each NA."
 }
 
-Return ONLY a valid JSON object. Do NOT wrap your response in markdown code blocks.
-Do NOT use backticks. Do NOT prefix with ```json or any other text.
+Return ONLY a valid JSON object. Do NOT wrap in markdown code blocks.
+Do NOT use backticks. Do NOT prefix with ```json.
 Your entire response must start with { and end with }.
 </output_format>
 
