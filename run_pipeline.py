@@ -81,6 +81,7 @@ from src.config import PROJECT_ROOT, DATA_DIR, PDF_DIR, DEFAULT_MODEL
 from src.extractor import extract_fields, EXPECTED_KEYS
 from src.pdf_reader import extract_text
 from src.normalizer import normalize_record
+from access_score import compute_access_score
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -164,6 +165,7 @@ OUTPUT_COLUMNS: list[str] = [
     "Reauthorization Duration(in-months)",
     "Reauthorization Required",
     "Reauthorization Requirements Documented in Policy",
+    "Access Score",
 ]
 
 logger = logging.getLogger(__name__)
@@ -184,6 +186,11 @@ def process_row(filename: str, brand: str, model: str = DEFAULT_MODEL) -> dict[s
         pages = extract_text(pdf_path, use_cache=True)
         raw = extract_fields(pages, brand)
         normalized = normalize_record(raw, brand=brand)
+
+        # Compute Access Score (13th parameter) from normalized extraction values.
+        # Pure Python function — no LLM call, works identically on OpenRouter and Groq.
+        access_score = compute_access_score(normalized, brand)
+        normalized["access_score"] = str(access_score)
 
         # Audit: warn when duration or reauth fields are all-NA — useful for
         # diagnosing missed APPROVAL LENGTH / combined-section extractions.
@@ -240,6 +247,7 @@ if __name__ == "__main__":
 
         row: dict = {"Filename": filename, "Brand": brand}
         row.update({KEY_TO_COLUMN[key]: fields[key] for key in EXPECTED_KEYS})
+        row["Access Score"] = fields.get("access_score", "NA")
         results.append(row)
 
     logger.info("All rows complete. Writing to %s", OUTPUT_CSV)
