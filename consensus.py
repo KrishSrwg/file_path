@@ -25,6 +25,10 @@ Usage:
     python consensus.py --output final_consensus.csv result_v2.csv result_v10.csv ...
     python consensus.py --min-votes 3 result_v*.csv   # require 3 votes for non-NA win
 
+Post-consensus corrections applied automatically:
+    - reauth_required is forced to "Yes" if reauth_duration or
+      reauth_requirements_text is non-NA (mirrors normalizer.py rule).
+
 Running the voting pipeline:
     1. python run_pipeline.py                          # → result_vN.csv  (run 1)
     2. RETRY_ALL_NA_MODE=true python run_pipeline.py   # → result_v(N+1) (run 2, retries NA)
@@ -172,6 +176,30 @@ def build_consensus(
                 consensus_col.append(vote_categorical(values, min_votes=min_votes))
 
         result[col] = consensus_col
+
+    # Post-consensus business rule: reauth_required must be "Yes" if either
+    # reauth_duration or reauth_requirements_text is non-NA.
+    # This mirrors the rule in normalizer.py but applied to the aggregated consensus.
+    # Fixes cases where individual runs correctly extracted reauth content but
+    # the majority vote left reauth_required as NA due to split votes.
+    dur_col  = "Reauthorization Duration(in-months)"
+    text_col = "Reauthorization Requirements Documented in Policy"
+    req_col  = "Reauthorization Required"
+    if dur_col in result.columns and text_col in result.columns and req_col in result.columns:
+        for idx in range(len(result)):
+            dur_val  = result.iloc[idx][dur_col]
+            text_val = result.iloc[idx][text_col]
+            req_val  = result.iloc[idx][req_col]
+            dur_is_na  = dur_val  is None or str(dur_val).strip().lower()  in _NA_STRINGS
+            text_is_na = text_val is None or str(text_val).strip().lower() in _NA_STRINGS
+            req_is_yes = str(req_val).strip() == "Yes" if req_val is not None else False
+            if (not dur_is_na or not text_is_na) and not req_is_yes:
+                logger.info(
+                    "build_consensus: overriding reauth_required → 'Yes' at row %d "
+                    "(reauth_duration=%r, reauth_requirements_text=%r)",
+                    idx, dur_val, text_val,
+                )
+                result.at[idx, req_col] = "Yes"
 
     # Reorder columns to match the submission tab layout
     ordered_cols = [
