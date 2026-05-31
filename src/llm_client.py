@@ -142,30 +142,81 @@ def _cached_response_is_none(cached_data: dict) -> bool:
     return cached_data.get("response") is None
 
 
+# Fields that are supplementary (text/reasoning) and do NOT affect scoring.
+# When checking whether a cached response is "worth retrying", these fields are
+# excluded from the primary-NA check. A response where ALL primary (non-supplementary)
+# fields are NA is retried even when a supplementary text field is non-NA.
+#
+# Rationale (per group):
+#   step_therapy : step_therapy_text is supplementary.  If the LLM found the
+#                  policy text but left num_steps_brands, num_steps_generic, and
+#                  step_phototherapy all-NA, the count extraction failed and the
+#                  call is worth retrying.
+#   reauth       : reauth_requirements_text is supplementary. If reauth_required
+#                  is NA but the requirements text has content, the decision field
+#                  failed and the call is worth retrying.
+#   _reasoning   : debug field added to step_therapy output — always excluded.
+_SUPPLEMENTARY_FIELDS: frozenset[str] = frozenset({
+    "step_therapy_text",        # step_therapy group — text extracted, counts may still be NA
+    "reauth_requirements_text", # reauth group     — text extracted, required flag may be NA
+    "_reasoning",               # debug/chain-of-thought field, never a scorable value
+})
+
+
 def _cached_response_is_all_na(cached_data: dict) -> bool:
-    """Return True if a cached response was None OR contained only NA values.
+    """Return True if a cached response is worth retrying under RETRY_ALL_NA_MODE.
 
     Used by RETRY_ALL_NA_MODE to find cells worth retrying for consensus voting.
-    A response with all values = 'NA' may mean the LLM stochastically found
-    nothing, even if the document contains the relevant content.
+    A response whose primary (scorable) fields are all 'NA' may mean the LLM
+    stochastically found nothing, even if the document contains the content.
+
+    Check 1 — NoneType: the API returned no content at all.
+    Check 2 — All fields NA: every field in the response (including text fields)
+              is NA. This is the original all-NA behaviour and catches complete
+              extraction failures for single-field groups (age, tb_test, etc.).
+    Check 3 — All PRIMARY fields NA: supplementary text/reasoning fields are
+              excluded from the NA test. If every non-supplementary field is NA,
+              the count/decision extraction failed even though text was found.
+              This catches the partial-extraction case for step_therapy (text
+              present but step counts all NA) and reauth (text present but
+              reauth_required is NA).
 
     Returns True for:
-    - NoneType (response is null)
-    - Valid JSON where every field value is 'NA' (case-insensitive)
-    - Unparseable responses (treat as failed)
+    - NoneType responses (null content)
+    - Valid JSON where ALL fields are NA
+    - Valid JSON where all PRIMARY (non-supplementary) fields are NA
+    - Unparseable responses (treat as failed → worth retrying)
     """
     import re as _re
     import json as _json
+
+    # Check 1 — NoneType
     response = cached_data.get("response")
     if response is None:
         return True
+
     try:
         stripped = response.strip()
         if stripped.startswith("```"):
             stripped = _re.sub(r"^```(?:json)?\s*\n?", "", stripped)
             stripped = _re.sub(r"\n?```\s*$", "", stripped).strip()
         parsed = _json.loads(stripped)
-        return all(str(v).strip().upper() == "NA" for v in parsed.values())
+
+        # Check 2 — ALL fields (including text fields) are NA
+        if all(str(v).strip().upper() == "NA" for v in parsed.values()):
+            return True
+
+        # Check 3 — All PRIMARY fields are NA (text/reasoning fields excluded)
+        primary_values = [
+            str(v).strip().upper()
+            for k, v in parsed.items()
+            if k not in _SUPPLEMENTARY_FIELDS
+        ]
+        if primary_values and all(v == "NA" for v in primary_values):
+            return True
+
+        return False
+
     except Exception:
         return True  # parse failure → treat as failed, worth retrying
 
