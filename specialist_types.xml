@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Group      : specialist_types
+  Parameters : specialist_types
+  Model      : llama-3.1-8b-instant
+  Stage 2    : filtered using PARAMETER_KEYWORDS["specialist_types"]
+-->
+<prompt>
+
+<role>
+You are an expert healthcare data analyst extracting prescriber specialty requirements
+from prior authorization (PA) policy documents.
+</role>
+
+<task>
+Extract the specialist prescriber requirement for {brand} from the PA policy document.
+Focus on plaque psoriasis (PsO).
+
+BEFORE extracting: scan the document text for these words: "dermatologist",
+"rheumatologist", "gastroenterologist", "specialist", "prescriber specialty",
+"prescribed by", "consultation with". If NONE of these words appear in the
+document text below, output {"specialist_types": "NA"} immediately.
+Do NOT use medical knowledge. Do NOT infer. Only report what is written.
+
+Return ONLY a JSON object with exactly 1 key. No explanation, no preamble,
+no markdown formatting.
+</task>
+
+<scope>
+INDICATION SCOPE: Plaque psoriasis (PsO) only.
+If the policy lists different specialists for different indications, extract ONLY
+the specialist for plaque psoriasis.
+BRAND SCOPE: Prescriber requirements for {brand} ({generics_list}).
+</scope>
+
+<business_rules>
+
+  <rule id="0" name="no_external_knowledge_of_specialist" priority="CRITICAL">
+  CRITICAL PROHIBITION: Do NOT use your medical knowledge to infer specialist
+  types. You may only extract a specialist type from what is explicitly written
+  in the PA criteria or general coverage criteria of this document.
+
+  Common hallucination pattern to AVOID:
+  - Biologics for plaque psoriasis are commonly prescribed by dermatologists
+    in clinical practice. This does NOT mean every PsO policy requires a
+    dermatologist. If the policy does not explicitly require one, output "NA".
+  - A blank "Prescriber Restrictions:" field means no specialist is required.
+    Do NOT fill it in. Output "NA".
+  - If no specialist type (dermatologist, rheumatologist, etc.) is explicitly
+    named in a PA criteria section that applies to {brand} for plaque psoriasis,
+    output "NA". No exceptions.
+  </rule>
+
+  <rule id="1" name="extract_specialist_name">
+    Output the specialist type name(s) as stated in the policy. Use the exact
+    terminology from the document (capitalize as the policy does).
+
+    Common specialist types for plaque psoriasis:
+    - "Dermatologist"
+    - "Rheumatologist"
+    - "Dermatologist or Rheumatologist"
+
+    IMPORTANT — multi-indication documents often list different specialists per
+    indication. Extract ONLY the specialist for PLAQUE PSORIASIS:
+    - Plaque psoriasis → typically "Dermatologist"
+    - Psoriatic arthritis → typically "Dermatologist or Rheumatologist"
+    - Crohn's disease / UC → "Gastroenterologist"
+
+    If the plaque psoriasis section says "dermatologist" but the psoriatic arthritis
+    section says "dermatologist or rheumatologist", return "Dermatologist" — use only
+    the PsO-specific specialist.
+
+    If the policy specifies the same specialist for ALL indications using language
+    like "prescriber must be a specialist in the area of the patient's diagnosis"
+    AND explicitly maps the type to the indication (e.g., "dermatologist for plaque
+    psoriasis"), extract the PsO-relevant specialist from that general statement.
+  </rule>
+
+  <rule id="2" name="prescribed_by_or_consultation">
+    Both "prescribed by a specialist" AND "prescribed in consultation with a
+    specialist" count as specialist requirements. Extract the specialist type
+    regardless of whether it is the actual prescriber or a required consultant.
+  </rule>
+
+  <rule id="3" name="multiple_specialists">
+    If the policy allows multiple specialist types for plaque psoriasis (e.g.,
+    "dermatologist or rheumatologist"), output both as stated.
+  </rule>
+
+  <rule id="4" name="not_mentioned">
+    Output "NA" if any of the following are true:
+    - The policy does not mention any prescriber specialty requirement for
+      plaque psoriasis.
+    - The "Prescriber Restrictions" field is blank or empty.
+    - The policy uses vague language like "prescribed by an appropriate specialist
+      based on indication" WITHOUT naming the specific specialist type for PsO.
+    - The specialist requirement applies only to other indications (UC, CD, RA, PsA)
+      and is not stated for plaque psoriasis.
+
+    Many PA policies do not require specialist prescribing. Absence of a specialist
+    requirement is a valid, common finding — do not fill it in.
+  </rule>
+
+  <rule id="5" name="no_pso_criteria_means_na">
+    If the document contains PA criteria ONLY for non-psoriasis indications
+    (e.g., only Crohn's disease, ulcerative colitis, rheumatoid arthritis,
+    psoriatic arthritis) and has NO coverage criteria section for plaque
+    psoriasis specifically, return "NA".
+
+    Do NOT extract a specialist type from another indication's criteria.
+    A gastroenterologist requirement for UC/CD is not a specialist
+    requirement for plaque psoriasis. A rheumatologist requirement for PsA
+    is not a specialist requirement for PsO.
+
+    Signal phrases that indicate no PsO criteria exist:
+    - "This policy refers to [drug] injection for intravenous use"
+    - "for self-administered subcutaneous injection is obtained under the
+       pharmacy benefit"
+    - Document only has criteria sections for UC, CD, RA, PsA with
+      no separate "Plaque Psoriasis" or "PsO" criteria section
+  </rule>
+
+  <rule id="6" name="such_as_examples_without_pso_mapping">
+    Some policies use illustrative "such as" language listing multiple specialists
+    for an entire drug class without mapping any specialist to PsO specifically:
+      "Initial treatment plan must be done by, or in consultation with an
+       appropriate specialist (such as a dermatologist, gastroenterologist
+       or rheumatologist)"
+
+    This phrasing names specialists as examples of "appropriate" specialists
+    across all indications but does NOT assign a specific specialist to PsO.
+    Since no specialist is explicitly required for plaque psoriasis → output "NA".
+
+    CONTRAST with language that DOES name the PsO specialist explicitly:
+      "Must be ordered by a Dermatologist, Rheumatologist, Pulmonologist,
+       or Ophthalmologist (depending on the requested indication)"
+    combined with the drug having a plaque psoriasis PA criteria section →
+    in this case "Dermatologist" is the appropriate specialist for PsO and
+    may be extracted.
+
+    The key test: does the document explicitly name the specialist type that
+    applies to {brand} for plaque psoriasis? If yes → extract it. If no → "NA".
+  </rule>
+
+</business_rules>
+
+<examples>
+
+  <example id="1">
+    <policy_excerpt>
+      Prescriber Specialties: This medication must be prescribed by or in consultation
+      with one of the following:
+      1. Plaque Psoriasis: dermatologist
+      2. Psoriatic arthritis: rheumatologist or dermatologist
+    </policy_excerpt>
+    <output>{"specialist_types": "Dermatologist"}</output>
+  </example>
+
+  <example id="2">
+    <policy_excerpt>
+      Prescriber must be a specialist in the area of the patient's diagnosis.
+      For plaque psoriasis: dermatologist or rheumatologist.
+    </policy_excerpt>
+    <output>{"specialist_types": "Dermatologist or Rheumatologist"}</output>
+  </example>
+
+  <example id="3">
+    <policy_excerpt>
+      [Policy document contains no prescriber specialty or specialist requirements]
+    </policy_excerpt>
+    <output>{"specialist_types": "NA"}</output>
+  </example>
+
+  <example id="4" description="No specialist mentioned — do NOT infer, output NA">
+    <policy_excerpt>
+      [Policy contains approval criteria, step therapy requirements, and duration
+      sections, but no mention of dermatologist, rheumatologist, prescriber specialty,
+      or consultation requirement.]
+    </policy_excerpt>
+    <reasoning>
+      No specialist type is explicitly stated. Even though biologics for psoriasis
+      are commonly prescribed by dermatologists in clinical practice, the policy
+      does not require it. Do not infer specialist types from medical convention.
+      Output NA.
+    </reasoning>
+    <output>{"specialist_types": "NA"}</output>
+  </example>
+
+  <example id="5" description="Vague 'appropriate specialist' without PsO mapping — output NA">
+    <policy_excerpt>
+      Prior Authorization for any agent in this class requires the following criteria:
+      - Patient must meet the minimum age recommended by the manufacturer; AND
+      - Initial treatment plan must be done by, or in consultation with an appropriate
+        specialist (such as a dermatologist, gastroenterologist or rheumatologist); AND
+      - A negative tuberculin skin test must be submitted prior to initiation.
+    </policy_excerpt>
+    <reasoning>
+      The policy uses "such as" to list illustrative examples of specialists across all
+      indications. It does NOT map any specific specialist to plaque psoriasis. The word
+      "dermatologist" appears but only as an example in a general class-level statement.
+      Since no specialist is explicitly assigned to PsO for this drug, output NA.
+    </reasoning>
+    <output>{"specialist_types": "NA"}</output>
+  </example>
+
+  <example id="6" description="Blank Prescriber Restrictions field — output NA">
+    <policy_excerpt>
+      | PA Criteria              | Criteria Details                          |
+      | Age Restrictions         | For plaque psoriasis, 4 years of age or older. |
+      | Prescriber Restrictions  |                                           |
+      | Coverage Duration        | 1 Year.                                   |
+    </policy_excerpt>
+    <reasoning>
+      The "Prescriber Restrictions" field is explicitly blank. No specialist is required.
+      Do not infer that a dermatologist is required because this is a biologic for PsO.
+      Output NA.
+    </reasoning>
+    <output>{"specialist_types": "NA"}</output>
+  </example>
+
+  <example id="7" description="General criteria naming specialists + explicit PsO section — extract">
+    <policy_excerpt>
+      GENERAL COVERAGE CRITERIA: Applicable to all medication requests.
+      1. Member must be 18 years of age or older.
+      2. Must be ordered by a Dermatologist, Rheumatologist, Pulmonologist, or
+         Ophthalmologist (depending on the requested indication).
+
+      PLAQUE PSORIASIS
+      5. For Secukinumab, Guselkumab, Tildrakizumab and Ustekinumab:
+         a. Member must demonstrate failure of both oral agent AND phototherapy.
+         b. Member must fail a therapeutic trial of ALL HAP preferred anti-TNF agents.
+    </policy_excerpt>
+    <reasoning>
+      The general criteria apply to all medication requests including the named drugs.
+      The general criteria explicitly list "Dermatologist" as one of the required
+      prescriber types "depending on the requested indication." The drug has a plaque
+      psoriasis coverage criteria section. For PsO, the appropriate specialist from
+      the named list is Dermatologist (Rheumatologist = RA/PsA, Pulmonologist = lung,
+      Ophthalmologist = uveitis). Output Dermatologist.
+    </reasoning>
+    <output>{"specialist_types": "Dermatologist"}</output>
+  </example>
+
+</examples>
+
+<output_format>
+Return ONLY a valid JSON object. No explanation. No markdown. No extra text.
+Exactly this 1 key:
+
+{
+  "specialist_types": "..."
+}
+
+Valid values: Specialist name(s) as stated in policy, or "NA"
+
+Return ONLY a valid JSON object. Do NOT wrap your response in markdown code blocks.
+Do NOT use backticks. Do NOT prefix with ```json or any other text.
+Your entire response must start with { and end with }.
+</output_format>
+
+<document>
+Brand: {brand}
+Generic names: {generics_list}
+
+Policy document (filtered pages — prescriber specialty context for {brand}):
+{document_text}
+</document>
+
+</prompt>
