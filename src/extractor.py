@@ -94,10 +94,17 @@ def _cap_pages(pages: dict[int, str], model: str) -> dict[int, str]:
     """Enforce a hard page cap on Stage 2 output before building the LLM prompt.
 
     The 8B model has a 6,000 TPM hard wall; the 70B model has 12,000.
-    When Stage 2 returns more pages than the cap, keep the first half and
-    last half of the sorted page list.  PA docs front-load clinical criteria
-    and back-load renewal/QL sections, so this strategy preserves the most
-    diagnostically useful pages.
+    When Stage 2 returns more pages than the cap, select `limit` pages using
+    EVENLY-DISTRIBUTED SAMPLING across the full sorted page range.
+
+    Rationale for even distribution over first+last:
+      - Single-drug policies (3–30 pages): evenly distributed ≈ all pages, so no loss.
+      - Large multi-drug handbooks (100–300 pages): the target drug's section is
+        wherever it alphabetically falls — often in the middle. First+last would
+        systematically send the document header and an unrelated drug's section,
+        while completely missing the target drug.
+      - Even distribution guarantees at least one sample from every ~(N/limit)-page
+        band, giving the LLM a representative cross-section of the full document.
 
     Args:
         pages: Page dict returned by filter_pages_for_parameter.
@@ -111,16 +118,31 @@ def _cap_pages(pages: dict[int, str], model: str) -> dict[int, str]:
         return pages
 
     sorted_keys = sorted(pages.keys())
-    first_n = limit // 2
-    last_n  = limit - first_n           # handles odd limits correctly
-    kept_keys = sorted_keys[:first_n] + sorted_keys[-last_n:]
-    # No dedup needed: len(pages) > limit guarantees no overlap between slices.
+    n = len(sorted_keys)
+
+    # Evenly distributed: pick `limit` indices spread uniformly across [0, n-1].
+    # For limit=8, n=65: picks indices 0, 9, 18, 27, 36, 45, 54, 64 → good coverage.
+    # For limit=1: just the first page.
+    if limit == 1:
+        kept_keys = [sorted_keys[0]]
+    else:
+        step = (n - 1) / (limit - 1)
+        kept_keys = sorted({sorted_keys[round(i * step)] for i in range(limit)})
+        # If dedup reduced count (rare with float rounding), pad with adjacent pages
+        while len(kept_keys) < limit and len(kept_keys) < n:
+            all_set = set(sorted_keys)
+            used_set = set(kept_keys)
+            remaining = sorted(all_set - used_set)
+            if remaining:
+                kept_keys = sorted(kept_keys + [remaining[len(kept_keys) % len(remaining)]])
+            else:
+                break
 
     logger.warning(
-        "_cap_pages: %d pages → capped to %d (first %d + last %d) for model %s",
-        len(pages), limit, first_n, last_n, model,
+        "_cap_pages: %d pages → capped to %d (evenly distributed) for model %s",
+        len(pages), limit, model,
     )
-    return {k: pages[k] for k in kept_keys}
+    return {k: pages[k] for k in kept_keys[:limit]}
 
 
 def _load_prompt(group_name: str) -> str:
@@ -357,6 +379,25 @@ def extract_fields(
             )
 
             raw = call_llm(prompt, model=group_model, response_format="json_object")
+
+            # Bug fix: if the LLM returns None content (malformed/empty response),
+            # retry ONCE with a short delay before giving up and returning NA.
+            # Previously, None went straight to NA with zero retry, losing ~31% of
+            # calls for reauth/step_therapy groups. This single retry recovers most
+            # of those cases since the failure is usually transient (API flakiness).
+            if raw is None:
+                logger.warning(
+                    "Group '%s' got None content on first call — retrying once",
+                    group_name,
+                )
+                time.sleep(INTER_CALL_DELAY * 2)
+                raw = call_llm(prompt, model=group_model, response_format="json_object")
+                if raw is None:
+                    logger.warning(
+                        "Group '%s' got None content on retry too — returning NA",
+                        group_name,
+                    )
+
             group_result = _parse_group_response(raw, group_params)
             result.update(group_result)
 
