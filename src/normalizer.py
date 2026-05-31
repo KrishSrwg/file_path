@@ -169,6 +169,7 @@ def normalize_duration(raw: str) -> str:
 
     Handles: '3 months', '3 mo', 'up to 12 months', 'twelve months',
     '12-months', '1 year', '2 years', '16 weeks',
+    'annually', 'per year', 'each year' (→ 12 Months),
     'Unspecified' (webinar: Unspecified → NA).
     Returns 'NA' if no duration can be parsed or the value is ambiguous.
 
@@ -208,7 +209,13 @@ def normalize_duration(raw: str) -> str:
         if num:
             return f"{int(num) * 12} Months"
 
-    # 5. Weeks → months (when result rounds to ≥ 1 month)
+    # 5. Annual renewal phrases: "annually", "per year", "each year", "every year"
+    #    These appear when the LLM passes through language like "renewed annually"
+    #    or "authorization renewed per year" without converting to a number first.
+    if re.search(r"\bann(?:ual(?:ly)?|ually)\b|\bper\s+year\b|\beach\s+year\b|\bevery\s+year\b", s, re.IGNORECASE):
+        return "12 Months"
+
+    # 6. Weeks → months (when result rounds to ≥ 1 month)
     #    4 weeks → ~1 month → '1 Month'  (e.g. Alaska Medicaid induction approval)
     #    8 weeks → 2 months → '2 Months'
     #   16 weeks → 4 months → '4 Months'
@@ -437,6 +444,9 @@ def normalize_record(record: dict[str, str], brand: str | None = None) -> dict[s
     # reauth_duration or reauth_requirements_text is non-NA.
     # Business rule: evidence of reauth content proves reauth is required,
     # even if the LLM did not explicitly state "Yes" for reauth_required.
+    # This catches: Pattern G (reauth duration extracted but required=NA),
+    # Pattern D (step-therapy misidentified — override is downstream safety net),
+    # Pattern J (cancer doc — reauth_duration will be NA so this won't fire).
     reauth_dur  = normalized.get("reauth_duration", "NA")
     reauth_text = normalized.get("reauth_requirements_text", "NA")
     if reauth_dur != "NA" or reauth_text != "NA":
