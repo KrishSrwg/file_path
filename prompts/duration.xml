@@ -41,7 +41,8 @@ universally to all drugs in the policy.
     This is how long the drug is approved before the patient must seek renewal.
 
     Common phrasings: "Initial Approval: up to N months", "authorized for N months",
-    "Length of Approval: N months (initial)", "coverage for up to N months".
+    "Length of Approval: N months (initial)", "coverage for up to N months",
+    "Approve for N months".
 
     Output format: "N Months" — capitalize Months, use integer (e.g., "3 Months",
     "6 Months", "12 Months").
@@ -56,7 +57,13 @@ universally to all drugs in the policy.
 
     Common phrasings: "Reauthorization Approval: up to N months",
     "renewal period of N months", "continuation approval for N months",
-    "Length of Approval: N months (renewal/continuation)".
+    "Length of Approval: N months (renewal/continuation)",
+    "may be renewed annually", "renewed annually",
+    "subsequent approvals of N months", "approved for 1 year upon renewal".
+
+    Annual renewal language: phrases such as "may be renewed annually",
+    "authorization renewed annually", "continued annually", or
+    "subsequent approvals for 1 year" all indicate reauth_duration = "12 Months".
 
     Output format: "N Months" — capitalize Months, use integer.
 
@@ -68,7 +75,8 @@ universally to all drugs in the policy.
   <rule id="3" name="same_duration_pattern">
     Many policies state the same duration for initial and reauth, or state only one.
     Extract what is explicitly stated. Do not assume reauth duration equals initial
-    duration unless the policy explicitly says so.
+    duration unless the policy explicitly says so (e.g., "Initial: 6 Months /
+    Re-Authorization: 1 year" means initial=6M and reauth=12M, NOT both 6M).
   </rule>
 
   <rule id="4" name="na_vs_missing">
@@ -93,6 +101,8 @@ universally to all drugs in the policy.
     - "Coverage Duration: Initial: N months"                 (WellSense table-format policies)
     - "Approval Duration: N Months"                          (Aetna BRM Addendum)
     - "Length of Approval: N Month(s)"                       (BCBS/Anthem module format)
+    - "Approval duration: N months"                          (Centene per-indication)
+    - "All other drugs: N months"                            (APPROVAL LENGTH universal section)
 
     REAUTH duration labels:
     - "Renewal Approval: up to N months"
@@ -102,6 +112,12 @@ universally to all drugs in the policy.
     - "Approve for 1 year"                                   (convert to 12 Months)
     - "Length of Approval: N Month(s)" when the surrounding
       section is a renewal or continuation section
+    - "Re-Authorization: N months"                           (APPROVAL LENGTH section)
+    - "Continuation: Approve for N year"
+    - "may be renewed annually" / "renewed annually"         (= 12 Months)
+    - "subsequent approvals of N months"
+    - "authorized for continuation for N months"
+    - "For all other indications - N months"                 (Centene II.E section)
 
     NOTE — "Authorization of N months may be granted" ambiguity:
     Aetna and Wellmark use this SAME phrase for both initial criteria AND continuation
@@ -111,6 +127,53 @@ universally to all drugs in the policy.
 
     DAY CONVERSION: When duration is stated in days, divide by 30.4 and round to nearest
     integer month. Key values: 183 days = 6 Months, 365 days = 12 Months.
+  </rule>
+
+  <rule id="6" name="quantity_limits_and_duration_sections">
+    CRITICAL — COMBINED SECTIONS: Some policies combine authorization duration and
+    quantity limits into a single section titled "Quantity Limits and duration" or
+    "Quantity Limits and Authorization Duration". These sections contain BOTH quantity
+    information AND duration statements such as:
+      "Initial therapy: Approve for 6 months"
+      "Continuation of therapy: Approve for 1 year"
+
+    Always search these combined sections for duration values. The duration extractor
+    must read these sections even though they are also handled by the quantity limits
+    extractor.
+  </rule>
+
+  <rule id="7" name="structural_duration_sections">
+    CRITICAL — LATE-APPEARING UNIVERSAL SECTIONS: Many multi-drug policies contain a
+    general LIMITATIONS, APPROVAL LENGTH, APPROVAL DURATION, or AUTHORIZATION PERIOD
+    section that appears AFTER the drug-specific coverage criteria. These sections
+    often contain universal initial and reauthorization durations that apply to ALL
+    drugs in the policy. Always search these sections.
+
+    Typical formats:
+      "APPROVAL LENGTH: All other drugs: 4 months. Re-Authorization: 1 year."
+      "Authorization Duration: Initial: 6 months. Renewal: 12 months."
+      "Length of Approval: 12 months for all indications."
+      "For all other indications - 12 months" (in a Continued Therapy section)
+
+    When such a section exists, its values override the absence of drug-specific
+    duration language. If no drug-specific duration is found, check these sections.
+  </rule>
+
+  <rule id="8" name="general_biologic_criteria">
+    Some policies list the queried drug in an FDA indication table but use general
+    "biologic" class language for clinical criteria and duration (without naming the
+    specific drug). If the drug appears in the indication table for plaque psoriasis
+    AND the criteria or duration section says "all biologics" or "the requested agent"
+    or uses class-level language, those duration values apply to the queried drug.
+    Extract the duration from that general section.
+  </rule>
+
+  <rule id="9" name="drug_verification">
+    Before extracting any duration values, verify that {brand} ({generics_list}) is
+    explicitly covered for plaque psoriasis (PsO) in this document. If the document
+    covers only cancer medications, cardiovascular drugs, or other non-inflammatory
+    conditions, and {brand} is not listed for plaque psoriasis, return NA for both
+    duration fields.
   </rule>
 
 </business_rules>
@@ -153,6 +216,86 @@ universally to all drugs in the policy.
       {
         "initial_auth_duration": "6 Months",
         "reauth_duration": "NA"
+      }
+    </output>
+  </example>
+
+  <example id="4" description="APPROVAL LENGTH universal section — different initial vs reauth">
+    <policy_excerpt>
+      APPROVAL LENGTH
+      Initial Authorization:  All other drugs: 4 months
+      Re-Authorization: 1 year
+    </policy_excerpt>
+    <reasoning>
+      Universal APPROVAL LENGTH section. Initial = 4 months (NOT assumed to equal reauth).
+      Re-Authorization stated as "1 year" = 12 Months.
+    </reasoning>
+    <output>
+      {
+        "initial_auth_duration": "4 Months",
+        "reauth_duration": "12 Months"
+      }
+    </output>
+  </example>
+
+  <example id="5" description="Quantity Limits and duration combined section">
+    <policy_excerpt>
+      Quantity Limits and duration
+      Quantity limit: 4 injections per 16 weeks
+      Initial therapy: Approve for 6 months
+      Continuation of therapy: Approve for 1 year
+    </policy_excerpt>
+    <reasoning>
+      Combined section contains both quantity limits AND duration. Extract the duration values.
+      Initial = 6 months. Continuation = 1 year = 12 Months.
+    </reasoning>
+    <output>
+      {
+        "initial_auth_duration": "6 Months",
+        "reauth_duration": "12 Months"
+      }
+    </output>
+  </example>
+
+  <example id="6" description="Annual renewal language">
+    <policy_excerpt>
+      D. Authorization may be reviewed at least annually. For any ongoing authorization,
+      documentation must confirm clinical benefit and disease stability.
+    </policy_excerpt>
+    <reasoning>
+      "Reviewed at least annually" = 12-month reauth duration.
+      No explicit initial duration stated.
+    </reasoning>
+    <output>
+      {
+        "initial_auth_duration": "NA",
+        "reauth_duration": "12 Months"
+      }
+    </output>
+  </example>
+
+  <example id="7" description="Centene-style per-indication approval with Continued Therapy universal">
+    <policy_excerpt>
+      N. Plaque Psoriasis (must meet all):
+      ...criteria...
+      Approval duration: 6 months
+
+      II. Continued Therapy — E. All Other Indications:
+      ...criteria...
+      Approval duration:
+      CRS - Up to 4 doses total
+      aGVHD - 3 months
+      For all other indications - 12 months
+    </policy_excerpt>
+    <reasoning>
+      PsO initial approval duration is stated in Section N: 6 months.
+      PsO reauth duration is found in Section II.E "For all other indications - 12 months"
+      (PsO is not CD/RA/HS/AD/PMR, so it falls under "all other indications").
+    </reasoning>
+    <output>
+      {
+        "initial_auth_duration": "6 Months",
+        "reauth_duration": "12 Months"
       }
     </output>
   </example>
