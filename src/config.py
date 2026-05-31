@@ -123,6 +123,19 @@ PARAMETER_KEYWORDS: dict[str, list[str]] = {
         "prior therapy",
         "treatment failure",
         "adverse reaction",
+        # Severity bypass language — critical for detecting 0-step paths
+        "body surface area",
+        "BSA",
+        "crucial body areas",
+        "10% of body surface",
+        "hands, feet",
+        "intractable pruritus",
+        "¥",  # blanket exception note marker
+        "step table",
+        "step 1",
+        "step 2",
+        "step 3",
+        "not required",          # blanket exception: "step therapy not required"
     ],
     "num_steps_brands": [
         "TNF blocker",
@@ -133,8 +146,28 @@ PARAMETER_KEYWORDS: dict[str, list[str]] = {
         "biologic DMARD",
         "branded product",
         "preferred biologic",
+        # Step Table tier markers — critical for multi-drug PBM policies
         "step 1",
         "step 2",
+        "step 3a",
+        "step 3b",
+        "step 3c",
+        "step 1a",
+        "step 1b",
+        "directed to one",
+        "directed to two",
+        "directed to three",
+        "non-preferred",
+        "preferred agent",
+        # Common biologic names used as step prerequisites
+        "Humira",
+        "Enbrel",
+        "Cosentyx",
+        "Skyrizi",
+        "Stelara",
+        "Tremfya",
+        "Otezla",
+        "preferred products",
     ],
     "num_steps_generic": [
         "topical agent",
@@ -149,6 +182,21 @@ PARAMETER_KEYWORDS: dict[str, list[str]] = {
         "vitamin D analog",
         "tazarotene",
         "systemic agent",
+        "calcipotriene",
+        "anthralin",
+        "coal tar",
+        "tacrolimus",
+        "pimecrolimus",
+        # Severity bypass / 0-step path detection
+        "body surface area",
+        "BSA",
+        "crucial body areas",
+        "10% of body surface",
+        "hands, feet",
+        "¥",
+        "not required",
+        "contraindication to all",
+        "FDA labeled contraindication",
     ],
     "step_phototherapy": [
         "phototherapy",
@@ -323,13 +371,16 @@ PARAMETER_MODELS: dict[str, str] = {
 #
 # 8B has a hard 6,000 TPM limit — template overhead is ~1,400 tokens,
 # so 8 pages (≈4,400 content tokens) is the safe ceiling.
-# 70B has a 12,000 TPM limit — 15 pages leaves comfortable headroom.
-# When Stage 2 returns more pages than the cap, extractor.py keeps the
-# first and last halves (front = criteria, back = renewal/QL sections).
+# 70B has a 12,000 TPM limit — 25 pages leaves comfortable headroom for
+# most documents; increased from 15 to capture criteria deep in large docs.
+# When Stage 2 returns more pages than the cap, keep the first half and
+# last half of the sorted page list. PA docs front-load clinical criteria
+# and back-load renewal/QL sections, so this strategy preserves the most
+# diagnostically useful pages.
 # ---------------------------------------------------------------------------
 
 STAGE2_MAX_PAGES_8B: int  = 8
-STAGE2_MAX_PAGES_70B: int = 15
+STAGE2_MAX_PAGES_70B: int = 25   # increased from 15 to handle large documents
 
 # Inter-call delay between consecutive LLM calls within a single row.
 # Groq: 4 s to avoid per-minute token exhaustion.
@@ -343,7 +394,7 @@ INTER_CALL_DELAY_OPENROUTER: int  = 0
 # ---------------------------------------------------------------------------
 
 FDA_LABELED_AGE: dict[str, str] = {
-    "TREMFYA":   ">=18",   # adults only for plaque psoriasis per FDA label
+    "TREMFYA":   ">=6",    # pediatric ≥6 years (≥40 kg) approved September 29, 2025
     "STELARA":   ">=6",    # pediatric ≥6 years
     "AMJEVITA":  ">=18",   # adults only for plaque psoriasis
     "COSENTYX":  ">=6",    # pediatric ≥6 years
