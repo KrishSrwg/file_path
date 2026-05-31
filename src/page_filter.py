@@ -29,6 +29,34 @@ UNIVERSAL_MARKERS: list[str] = [
     "initial authorization request must include",
 ]
 
+# Structural section headers that always contain duration/authorization data.
+# These pages are included regardless of brand mention because they hold
+# universal approval periods that apply to all drugs in the policy.
+# Fixes: Pattern B (APPROVAL LENGTH sections), Pattern G (annual renewal language),
+#        Pattern A (combined Quantity Limits and duration sections).
+STRUCTURAL_SECTION_MARKERS: list[str] = [
+    "approval length",
+    "approval duration",
+    "authorization period",
+    "authorization duration",
+    "length of authorization",
+    "length of approval",
+    "duration of approval",
+    "quantity limits and duration",
+    "quantity limits and authorization",
+    "limitations of authorization",
+    "approval limitations",
+    "reauthorization duration",
+    "renewal duration",
+    "continuation of therapy",          # always include Continued Therapy sections
+    "continued therapy",
+    "re-authorization",
+    "reauthorization criteria",
+    "renewal criteria",
+    "renewal evaluation",
+    "renewal approval",
+]
+
 BRAND_KEYWORDS = {
     "TREMFYA":    ["tremfya", "guselkumab"],
     "STELARA":    ["stelara", "ustekinumab"],
@@ -45,6 +73,11 @@ BRAND_KEYWORDS = {
     "YESINTEK":   ["yesintek", "ustekinumab"],  # biosimilar
     "OTULFI":     ["otulfi", "ustekinumab"],    # biosimilar
 }
+
+# Competing brand terms — used to detect cross-contamination pages.
+# A page that mentions ONLY a competing brand (and not the queried brand)
+# is deprioritised. Populated dynamically in filter_pages().
+_ALL_BRAND_TERMS: dict[str, list[str]] = BRAND_KEYWORDS
 
 # Keywords at or below this length, or fully uppercase, get \b word-boundary
 # matching to avoid substring false positives (e.g. "TB" inside "STBs").
@@ -177,6 +210,45 @@ def _is_noise_page(
     return False
 
 
+def _is_cross_contamination_page(
+    page_text: str,
+    brand_pattern: re.Pattern,
+    brand: str,
+) -> bool:
+    """Return True if a page mentions ONLY a competing brand and not the queried brand.
+
+    Fixes Pattern H (cross-contamination): when a multi-drug document passes pages
+    for Brand A into the LLM call for Brand B, the model may extract Brand A's
+    criteria. This detects pages where only a competing brand is prominently named.
+
+    A page is contaminated if:
+    - The queried brand (brand_pattern) is NOT found on the page, AND
+    - At least one competing brand with many more mentions exists.
+
+    Only fires when the competing brand would otherwise be the dominant signal;
+    does not affect pages that genuinely discuss both brands.
+    """
+    # If the queried brand appears anywhere, the page is not contaminated.
+    if _page_has_match(page_text, brand_pattern):
+        return False
+
+    # Count mentions of every OTHER brand to detect competitor dominance.
+    text_lower = page_text.lower()
+    for other_brand, other_terms in _ALL_BRAND_TERMS.items():
+        if other_brand == brand.upper():
+            continue
+        mention_count = sum(
+            len(re.findall(re.escape(term), text_lower))
+            for term in other_terms
+            if term.lower() not in ("adalimumab", "ustekinumab")  # shared generics excluded
+        )
+        if mention_count >= 3:
+            # A competing brand is mentioned 3+ times and the queried brand 0 times.
+            return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -193,10 +265,16 @@ def filter_pages(
     criteria for the given brand.
 
     A page is a "seed" if it matches both the brand pattern and the indication
-    pattern, or if it matches universal-criteria markers. The returned set
-    includes all seed pages plus a buffer of adjacent pages on each side, and
-    always the first `always_include_first` pages (covers table-of-contents and
-    scope statements that rarely mention the brand by name).
+    pattern, or if it matches universal-criteria markers, or if it matches
+    structural section markers (APPROVAL LENGTH, LIMITATIONS, etc.) that contain
+    duration/reauth data. The returned set includes all seed pages plus a buffer
+    of adjacent pages on each side, and always the first `always_include_first`
+    pages (covers table-of-contents and scope statements that rarely mention the
+    brand by name).
+
+    Cross-contamination guard: pages that mention ONLY a competing brand and NOT
+    the queried brand are flagged and deprioritised (still included if they are a
+    structural-section match, since those are universal to all brands).
 
     Args:
         pages: Mapping of 1-indexed page number to extracted text, as returned
@@ -231,28 +309,31 @@ def filter_pages(
     brand_pattern = _build_pattern(brand_terms)
     indication_pattern = _build_pattern(INDICATION_KEYWORDS)
     universal_pattern = _build_pattern(UNIVERSAL_MARKERS)
+    structural_pattern = _build_pattern(STRUCTURAL_SECTION_MARKERS)
     exclude_pattern = _build_pattern(EXCLUDE_INDICATIONS)
     plaque_pattern = _build_pattern(PLAQUE_SPECIFIC_TERMS)
 
-    # Identify seed pages using three independent conditions.
+    # Identify seed pages using four independent conditions.
     # Any page satisfying at least one condition becomes a seed.
     #
-    # 1. is_relevant:     brand keyword AND indication keyword on the same page.
-    #                     Catches brand-specific PA policy pages (most common).
-    # 2. is_universal:    universal-criteria marker (applies-to-all-drugs sections).
-    #                     Catches TB test requirements, general coverage criteria.
-    # 3. is_criteria_page: indication keyword AND PA criteria language, even without
-    #                     a brand name. Catches class-level TIM/formulary policies
-    #                     (e.g. Ventegra TIM, WV Medicaid, ForwardHealth) where the
-    #                     step therapy section says "plaque psoriasis" but names no
-    #                     specific brand — the brand only appears in the QL table.
-    #                     Using BOTH indication AND criteria language keeps this
-    #                     generalizable without causing false positives on clinical
-    #                     background sections (which lack criteria phrases).
+    # 1. is_relevant:        brand keyword AND indication keyword on the same page.
+    #                        Catches brand-specific PA policy pages (most common).
+    # 2. is_universal:       universal-criteria marker (applies-to-all-drugs sections).
+    #                        Catches TB test requirements, general coverage criteria.
+    # 3. is_criteria_page:   indication keyword AND PA criteria language, even without
+    #                        a brand name. Catches class-level TIM/formulary policies.
+    # 4. is_structural:      structural section headers (APPROVAL LENGTH, LIMITATIONS,
+    #                        QUANTITY LIMITS AND DURATION, CONTINUATION OF THERAPY, etc.)
+    #                        These always contain duration/reauth data regardless of
+    #                        whether the brand is named on that page.
+    #                        Fixes: Pattern A (combined sections), Pattern B (late-appearing
+    #                        APPROVAL LENGTH sections), Pattern G (annual renewal language).
     all_page_nums = sorted(pages.keys())
     page_num_set = set(all_page_nums)
 
     seed_pages: list[int] = []
+    contaminated_pages: set[int] = set()
+
     for page_num in all_page_nums:
         text = pages[page_num]
         is_relevant = _page_has_match(text, brand_pattern) and _page_has_match(
@@ -262,10 +343,23 @@ def filter_pages(
         is_criteria_page = _page_has_match(text, indication_pattern) and _page_has_match(
             text, _CRITERIA_PATTERN
         )
-        if is_relevant or is_universal or is_criteria_page:
+        is_structural = _page_has_match(text, structural_pattern)
+
+        if is_relevant or is_universal or is_criteria_page or is_structural:
             seed_pages.append(page_num)
 
-    # Build include set: seeds + buffer expansion (back 1, forward 2) + always_include_first pages.
+            # Check for cross-contamination: flag pages that are structural
+            # but mention only a competitor, not the queried brand.
+            # These pages are kept (structural data is universal) but logged.
+            if not is_relevant and _is_cross_contamination_page(text, brand_pattern, brand):
+                contaminated_pages.add(page_num)
+                logger.debug(
+                    "Cross-contamination flag on page %d for brand=%s "
+                    "(structural/criteria match but competing brand dominates; page kept)",
+                    page_num, brand,
+                )
+
+    # Build include set: seeds + buffer expansion (back 1, forward 4) + always_include_first pages.
     include_set: set[int] = set()
 
     for seed in seed_pages:
@@ -295,11 +389,12 @@ def filter_pages(
 
     seed_str = ", ".join(str(p) for p in seed_pages) if seed_pages else "none"
     noise_str = f"; noise-removed: {sorted(noise_removed)}" if noise_removed else ""
+    contam_str = f"; cross-contamination-flagged: {sorted(contaminated_pages)}" if contaminated_pages else ""
     logger.info(
         "Filter result for %s: kept %d of %d pages "
-        "(seed pages: %s; brand+indication|universal|criteria seeds; "
-        "buffer back 1 fwd 4 + first %d added%s)",
-        brand, len(result), total, seed_str, always_include_first, noise_str,
+        "(seed pages: %s; brand+indication|universal|criteria|structural seeds; "
+        "buffer back 1 fwd 4 + first %d added%s%s)",
+        brand, len(result), total, seed_str, always_include_first, noise_str, contam_str,
     )
 
     return result
@@ -316,6 +411,11 @@ def filter_pages_for_parameter(
     Searches only within base_pages (the Stage 1 output). For each page in
     base_pages that matches any param_keywords, includes that page plus a small
     buffer of adjacent pages (also constrained to base_pages).
+
+    For duration parameters (initial_auth_duration, reauth_duration), the keyword
+    list is automatically extended with structural section terms to ensure
+    APPROVAL LENGTH, QUANTITY LIMITS AND DURATION, and CONTINUATION OF THERAPY
+    pages are always included. This fixes Pattern A and Pattern B misses.
 
     Fallback: if no pages match param_keywords, returns base_pages unchanged so
     the caller always has context to work with. This is logged as a warning.
@@ -341,7 +441,14 @@ def filter_pages_for_parameter(
         parameter, len(base_pages),
     )
 
-    param_pattern = _build_pattern(param_keywords)
+    # For duration-related parameters, extend the keyword list with structural
+    # section markers to capture APPROVAL LENGTH, QUANTITY LIMITS AND DURATION,
+    # CONTINUATION OF THERAPY sections that the generic duration keywords may miss.
+    effective_keywords = list(param_keywords)
+    if parameter in ("initial_auth_duration", "reauth_duration", "duration"):
+        effective_keywords.extend(STRUCTURAL_SECTION_MARKERS)
+
+    param_pattern = _build_pattern(effective_keywords)
     base_page_nums = sorted(base_pages.keys())
     base_set = set(base_page_nums)
 
